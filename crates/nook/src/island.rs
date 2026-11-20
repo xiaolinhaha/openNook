@@ -135,10 +135,12 @@ pub struct Island {
     pub expanded: bool,
     pub selected: Option<String>,
     pub hover: bool,
+    pub mod_dragging: bool,
     hover_at: Instant,
     /// When the pointer last left; None until it has been over the island.
     left_at: Option<Instant>,
     peek_until: Option<Instant>,
+    compact_notice: Option<(String, Instant)>,
     /// Which way swapped content travels: -1 from the left, 1 from the right.
     page_dir: f32,
     active_dir: f32,
@@ -206,9 +208,11 @@ impl Island {
             expanded: false,
             selected: None,
             hover: false,
+            mod_dragging: false,
             hover_at: Instant::now(),
             left_at: None,
             peek_until: None,
+            compact_notice: None,
             page_dir: 1.0,
             active_dir: 1.0,
             last_active: None,
@@ -314,6 +318,9 @@ impl Island {
     /// with more tabs than fit scrolls the strip; any other swipes.
     pub fn scroll(&mut self, dx: f32, dy: f32, phase: rune::GesturePhase, momentum: bool, at: Option<(f32, f32)>, tx: &mut Tx) -> bool {
         use nook_core::haptics::{HapticConfig, HapticPattern, trigger};
+        if self.mod_dragging {
+            return true;
+        }
         let now = Instant::now();
         let stale = self.scroll_lock.as_ref().is_none_or(|(_, t)| now.duration_since(*t) >= gesture::IDLE);
         if !momentum && (phase == rune::GesturePhase::Began || stale) {
@@ -374,7 +381,7 @@ impl Island {
     /// Mods with a page, in layout.expanded order, then by name.
     pub fn pages(&self) -> Vec<&Output> {
         let rank = |o: &Output| self.layout.expanded.iter().position(|n| *n == o.name).unwrap_or(usize::MAX);
-        let mut pages: Vec<&Output> = self.outputs.values().filter(|o| o.has_expanded && !self.hidden(&o.name)).collect();
+        let mut pages: Vec<&Output> = self.outputs.values().filter(|o| o.has_expanded && !self.hidden(&o.name) && !o.name.contains("-edited")).collect();
         pages.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name)));
         pages
     }
@@ -432,8 +439,18 @@ impl Island {
         }
     }
 
-    pub fn apply(&mut self, out: Output) {
+    pub fn apply(&mut self, out: Output, tx: &mut Tx) {
+        let notice_id = |o: &Output| o.activity.as_ref()?.notice.as_ref()?.k.clone();
+        let name = out.name.clone();
+        let new_notice = notice_id(&out).is_some_and(|id| {
+            self.outputs.get(&name).and_then(notice_id).as_ref() != Some(&id)
+        });
         self.outputs.insert(out.name.clone(), out);
+        if new_notice && !self.expanded && self.active().is_some_and(|o| o.name == name) {
+            let duration = Duration::from_secs(5);
+            self.compact_notice = Some((name, Instant::now() + duration));
+            tx.wake_after(duration);
+        }
         self.track_active();
         self.publish();
     }
@@ -544,6 +561,7 @@ impl Island {
             if open {
                 self.reveal_tab();
             } else {
+                self.mod_dragging = false;
                 self.peek_until = None;
                 self.left_at = None;
                 self.notes.clear();
@@ -610,6 +628,10 @@ impl Island {
                     tx.wake_after(Duration::from_millis(ms));
                 }
                 self.set_expanded(true);
+            }
+            "settings.open" => {
+                self.set_expanded(false);
+                if let Some(open) = &self.open_settings { open(); }
             }
             "theme.set" => {
                 let dir = crate::home::app_dir();
@@ -758,6 +780,10 @@ mod display_tests {
 
 pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
     let now = Instant::now();
+    if s.compact_notice.as_ref().is_some_and(|(_, until)| now >= *until) {
+        s.compact_notice = None;
+        return true;
+    }
     if s.images.as_ref().is_some_and(|i| i.take_arrived()) {
         return true;
     }
@@ -769,8 +795,8 @@ pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
         s.set_expanded(true);
         return true;
     }
-    // Typing holds the island open, wherever the pointer went.
-    if s.expanded && !s.hover && !s.fields.typing() {
+    // Typing and an in-progress drag hold the island open, wherever the pointer went.
+    if s.expanded && !s.hover && !s.fields.typing() && !s.mod_dragging {
         let peeking = s.peek_until.is_some_and(|t| now < t);
         let left = s.left_at.is_some_and(|t| now.duration_since(t) >= Duration::from_millis(opts.collapse_delay_ms));
         if !peeking && (left || s.peek_until.is_some()) {
@@ -912,13 +938,22 @@ fn veil(s: &Island, height: f32, black: Color) -> [(f32, Color); 3] {
 
 fn compact(s: &Island, look: &Look) -> El {
     let n = s.notch;
-    let peek = s.hover && s.layout.island.hover == HoverMode::Peek;
     let active = s.active();
     let activity = active.and_then(|o| o.activity.as_ref());
+    let hovered = s.hover && s.layout.island.hover == HoverMode::Peek;
+    let notice = s.compact_notice.as_ref().is_some_and(|(name, _)| active.is_some_and(|o| o.name == *name));
+    let peek = hovered || notice;
     let base_side = activity.map_or(0.0, |a| a.width.unwrap_or(n.h + 10.0).clamp(n.h * 0.8, 160.0));
     let side = base_side + if peek { PEEK_EXTRA / 2.0 } else { 0.0 } + s.swipe.pull_width() / 2.0;
-    let detail = activity.and_then(|a| a.detail.as_ref()).filter(|_| peek);
-    let chin = if !peek { 0.0 } else if detail.is_some() { PEEK_DETAIL_CHIN } else { PEEK_CHIN };
+    let detail = activity.and_then(|a| {
+        if hovered { a.detail.as_ref() } else if notice { a.notice.as_ref() } else { None }
+    });
+    let chin = if !peek { 0.0 } else if let Some(detail) = detail {
+        match detail.s.h {
+            Some(nook_mods::node::Len::Pt(height)) => (height + 4.0).clamp(PEEK_DETAIL_CHIN, 120.0),
+            _ => PEEK_DETAIL_CHIN,
+        }
+    } else { PEEK_CHIN };
     let mut island = col().size(n.w + 2.0 * side, n.h + chin + s.swipe.pull).corners([0.0, 0.0, look.compact_radius, look.compact_radius]).clip_rounded(0.0);
     let (Some(active), Some(activity)) = (active, activity) else {
         // Idle: exactly the camera housing, so it disappears into it (until hovered).
@@ -944,7 +979,7 @@ fn compact(s: &Island, look: &Look) -> El {
     );
     if let Some(d) = detail {
         island = island.child(
-            row().key(format!("compact/detail/{}", active.name)).w_full().h(PEEK_DETAIL_CHIN).px(16.0).pb(4.0).justify_center().items_center()
+            row().key(format!("compact/detail/{}", active.name)).w_full().h(chin).px(16.0).pb(4.0).justify_center().items_center()
                 .transition(swap(0.0, -4.0))
                 .child(render::node(d, &r)),
         );
@@ -1018,12 +1053,18 @@ fn expanded(s: &Island, look: &Look) -> El {
         .child(tabs);
     let title = page.map(|p| p.title.clone()).unwrap_or_default();
     // The tab bar sits still while pages swap under it; it arrives with the opening island.
+    let badge = page.filter(|p| p.name == "dashboard")
+        .and_then(|p| p.activity.as_ref()?.trailing.as_ref().map(|node| render::node(node, &rcx(s, p))));
+    let mut controls = row().w(shoulder).h_full().items_center().justify_end().pr(12.0).gap(5.0);
+    if let Some(badge) = badge { controls = controls.child(badge); }
+    if !page.is_some_and(|p| p.name == "dashboard") {
+        controls = controls.child(text(title).font(TextStyle::new(12.0, 600.0)).color(s.theme.color("muted")).truncate().shrink());
+    }
+    controls = controls.child(settings_button(s));
     let top = row().key("topbar").h(n.h).w_full().transition(swap(0.0, -SLIDE_Y))
         .child(strip)
         .child(el().w(n.w).h_full())
-        .child(row().w(shoulder).h_full().items_center().justify_end().pr(12.0).gap(6.0)
-            .child(text(title).font(TextStyle::new(12.0, 600.0)).color(s.theme.color("muted")).truncate().shrink())
-            .child(settings_button(s)));
+        .child(controls);
     let body = match page {
         Some(p) => {
             let content = match &p.expanded {
@@ -1038,7 +1079,8 @@ fn expanded(s: &Island, look: &Look) -> El {
         }
         None => empty(s),
     };
-    let mut island = col().w(w).corners([0.0, 0.0, look.expanded_radius, look.expanded_radius]).pb(16.0)
+    let bottom_padding = if page.is_some_and(|p| p.name == "dashboard") { 6.0 } else { 16.0 };
+    let mut island = col().w(w).corners([0.0, 0.0, look.expanded_radius, look.expanded_radius]).pb(bottom_padding)
         .clip_rounded(look.expanded_radius);
     island = island.child(top).child(col().w_full().px(16.0).pt(6.0).child(body));
     for note in &s.notes {

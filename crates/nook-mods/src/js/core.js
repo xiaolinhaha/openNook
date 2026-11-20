@@ -89,10 +89,10 @@ function renderSlot(view, slot) {
     const value = f.call(view, cx);
     if (value === null || value === undefined) return { value: null };
     if (slot === "activity") {
-      const { leading, trailing, detail, priority, width, ...rest } = value;
+      const { leading, trailing, detail, notice, priority, width, ...rest } = value;
       const extra = Object.keys(rest);
-      if (extra.length) throw new TypeError(`activity() returns { leading, trailing, detail, priority, width }; unknown: ${extra.join(", ")}`);
-      return { value: { leading: serialize(leading), trailing: serialize(trailing), detail: serialize(detail), priority: priority ?? 0, width: width ?? null } };
+      if (extra.length) throw new TypeError(`activity() returns { leading, trailing, detail, notice, priority, width }; unknown: ${extra.join(", ")}`);
+      return { value: { leading: serialize(leading), trailing: serialize(trailing), detail: serialize(detail), notice: serialize(notice), priority: priority ?? 0, width: width ?? null } };
     }
     if (slot === "style") return { value };
     return { value: serialize(value) };

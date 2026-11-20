@@ -219,7 +219,7 @@ pub fn sync_shipped(mods: &Path, installed_path: &Path, files: &[(&str, &[u8])])
             continue;
         }
         if target.exists() {
-            if as_shipped(&target, installed.get(name).unwrap_or(&shipped)) {
+            if as_shipped(&target, &shipped) || installed.get(name).is_some_and(|was| as_shipped(&target, was)) {
                 std::fs::remove_dir_all(&target)?;
             } else {
                 let clone = edited_name(mods, name);

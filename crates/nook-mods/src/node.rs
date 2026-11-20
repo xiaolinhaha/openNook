@@ -41,6 +41,8 @@ pub struct Handlers {
     pub click: Option<u64>,
     #[serde(default)]
     pub hover: Option<u64>,
+    #[serde(default)]
+    pub drag: Option<u64>,
     /// Keys while this element, or a text field inside it, has the keyboard.
     #[serde(default)]
     pub key: Option<u64>,
@@ -155,6 +157,9 @@ pub struct Activity {
     /// Shown under the camera while the closed island is hovered (a title, a time).
     #[serde(default)]
     pub detail: Option<Node>,
+    /// A keyed notification that briefly opens the compact detail area when its id changes.
+    #[serde(default)]
+    pub notice: Option<Node>,
     /// Higher wins the compact island when layout.json doesn't order the mods.
     #[serde(default)]
     pub priority: f64,

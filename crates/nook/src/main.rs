@@ -1,11 +1,13 @@
 //! openNook: a Dynamic Island for the notch whose every part is a mod. `opennook` runs the
 //! island; `opennook check <mod>` and `opennook shot` are for the agents that write mods.
 
+mod codex_status;
 mod fields;
 mod gesture;
 mod home;
 mod icons;
 mod images;
+mod map_status;
 mod palette;
 mod island;
 mod platform;
@@ -72,7 +74,7 @@ struct OverlayHost(OverlayHandle<Island>, Arc<Store>);
 
 impl Host for OverlayHost {
     fn output(&self, out: Output) {
-        self.0.update(move |s, _| s.apply(out));
+        self.0.update(move |s, tx| s.apply(out, tx));
     }
     fn removed(&self, name: &str) {
         let name = name.to_owned();
@@ -83,7 +85,7 @@ impl Host for OverlayHost {
         self.0.update(move |s, tx| s.command(&from, &command, &args, tx));
     }
     fn wants(&self, topic: &str) {
-        if topic == "agents" {
+        if matches!(topic, "agents" | "codexStatus") {
             services::start_agents(self.1.clone());
         }
         if topic == "location" {
@@ -340,7 +342,7 @@ fn check(args: &[String]) -> i32 {
     let mut problems: Vec<String> = out.error.iter().cloned().collect();
     let mut nodes = Vec::new();
     if let Some(a) = &out.activity {
-        nodes.extend(a.leading.iter().chain(a.trailing.iter()));
+        nodes.extend(a.leading.iter().chain(a.trailing.iter()).chain(a.detail.iter()).chain(a.notice.iter()));
     }
     nodes.extend(out.expanded.iter());
     for n in nodes {
@@ -397,11 +399,17 @@ fn shot(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--settings") {
         let mut state = settings::Settings::new();
         state.page = match flag(args, "--page").as_deref() {
+            Some("widgets") => settings::Page::Widgets,
+            Some("appearance") => settings::Page::Appearance,
+            Some("system") => settings::Page::SystemStats,
+            Some("notes") => settings::Page::Notes,
+            Some("launchers") => settings::Page::Launchers,
             Some("mods") => settings::Page::Mods,
             Some("yours") => settings::Page::Yours,
             Some("about") => settings::Page::About,
             Some("permissions") => settings::Page::Permissions,
-            _ => settings::Page::General,
+            Some("general") => settings::Page::General,
+            _ => settings::Page::Widgets,
         };
         state.onboarding = flag(args, "--onboarding").and_then(|n| n.parse().ok());
         let spec = AppSpec::new("openNook", settings::SIZE, settings::Settings::new, settings::view);
@@ -442,7 +450,7 @@ fn shot(args: &[String]) -> i32 {
     // Remote pictures, as the island would have them by now.
     let mut urls = Vec::new();
     for o in island.outputs.values() {
-        let nodes = o.expanded.iter().chain(o.activity.iter().flat_map(|a| a.leading.iter().chain(a.trailing.iter()).chain(a.detail.iter())));
+        let nodes = o.expanded.iter().chain(o.activity.iter().flat_map(|a| a.leading.iter().chain(a.trailing.iter()).chain(a.detail.iter()).chain(a.notice.iter())));
         for n in nodes {
             n.walk(&mut |n| {
                 if n.t == nook_mods::node::Kind::Image && let Some(src) = n.v.as_ref().filter(|v| v.starts_with("http://") || v.starts_with("https://")) {

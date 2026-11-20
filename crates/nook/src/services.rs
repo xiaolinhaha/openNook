@@ -39,7 +39,9 @@ pub fn start(store: Arc<Store>) {
         }
     });
     spawn("nook-apps", move || loop {
-        store.publish("apps", Value::Array(crate::platform::running_apps()));
+        let (apps, map_started) = crate::platform::running_apps();
+        store.publish("apps", Value::Array(apps));
+        store.publish("mapStatus", crate::map_status::read(map_started, now_ms()));
         std::thread::sleep(Duration::from_secs(2));
     });
 }
@@ -93,10 +95,18 @@ pub fn request_location(store: Arc<Store>) {
 }
 
 pub fn start_agents(store: Arc<Store>) {
-    spawn("nook-agents", move || loop {
-        let agents: Vec<Value> = nook_core::agents::snapshot().iter().map(agent_json).collect();
-        store.publish("agents", Value::Array(agents));
-        std::thread::sleep(nook_core::agents::poll_interval());
+    // Both topics share the same process scan, even if two mods first read different topics.
+    store.publish("agents", json!([]));
+    store.publish("codexStatus", Value::Null);
+    spawn("nook-agents", move || {
+        let mut codex = crate::codex_status::Monitor::new();
+        loop {
+            let (agents, codex_started) = nook_core::agents::snapshot_with_codex();
+            store.publish("agents", Value::Array(agents.iter().map(agent_json).collect()));
+            store.publish("codexStatus", codex.poll(SystemTime::now(), codex_started));
+            let cadence = codex_started.map_or_else(nook_core::agents::poll_interval, |_| Duration::from_secs(2));
+            std::thread::sleep(cadence);
+        }
     });
 }
 

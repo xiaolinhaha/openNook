@@ -24,12 +24,13 @@ mod mac {
 }
 
 /// Regular (Dock) apps that are running: `{ bundleId, name, pid }`.
-pub fn running_apps() -> Vec<Value> {
+pub fn running_apps() -> (Vec<Value>, Option<u64>) {
     #[cfg(target_os = "macos")]
     unsafe {
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
         let mut out = Vec::new();
+        let mut map_started = None;
         let pool: *mut AnyObject = msg_send![class!(NSAutoreleasePool), new];
         let ws: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
         let apps: *mut AnyObject = msg_send![ws, runningApplications];
@@ -42,16 +43,23 @@ pub fn running_apps() -> Vec<Value> {
                 continue;
             }
             let Some(bundle) = mac::string(msg_send![app, bundleIdentifier]) else { continue };
+            if bundle == crate::map_status::BUNDLE_ID {
+                let date: *mut AnyObject = msg_send![app, launchDate];
+                map_started = Some(if date.is_null() { 0 } else {
+                    let seconds: f64 = msg_send![date, timeIntervalSince1970];
+                    (seconds * 1000.0) as u64
+                });
+            }
             let name = mac::string(msg_send![app, localizedName]).unwrap_or_default();
             let pid: i32 = msg_send![app, processIdentifier];
             out.push(json!({ "bundleId": bundle, "name": name, "pid": pid }));
         }
         let _: () = msg_send![pool, drain];
         out.sort_by(|a, b| a["bundleId"].as_str().cmp(&b["bundleId"].as_str()));
-        out
+        (out, map_started)
     }
     #[cfg(not(target_os = "macos"))]
-    Vec::new()
+    (Vec::new(), None)
 }
 
 /// Pointer input Rune doesn't deliver to an overlay panel: it routes only left presses and

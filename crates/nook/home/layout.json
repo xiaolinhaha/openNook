@@ -1,22 +1,24 @@
 {
   "island": {
-    "width": 560,
+    "width": 600,
     "hover": "peek",
     "hoverDelayMs": 120,
     "collapseDelayMs": 200,
     "display": "notch",
     "hideInFullScreen": true,
-    "glass": true,
+    "glass": false,
     "glassTint": 0.5,
     "haptics": true
   },
   "compact": [
-    "herdr",
-    "timer",
-    "now-playing",
-    "weather"
+    "dashboard"
   ],
   "expanded": [
+    "dashboard"
+  ],
+  "hidden": [
+    "codex",
+    "system-monitor",
     "now-playing",
     "weather",
     "world-clock",
@@ -25,7 +27,31 @@
     "herdr",
     "containers"
   ],
-  "hidden": [],
-  "mods": {},
-  "theme": {}
+  "mods": {
+    "dashboard": {
+      "props": {
+        "activeWidgets": [
+          "soda-music",
+          "codex",
+          "clock",
+          "map",
+          "battery",
+          "network",
+          "rings",
+          "launchers"
+        ],
+        "widgetStyles": {
+          "battery": "muted",
+          "map": "dark",
+          "clock": "macaron",
+          "codex": "classic",
+          "launchers": "solid",
+          "network": "vibrant",
+          "rings": "classic",
+          "soda-music": "klein"
+        }
+      }
+    }
+  },
+  "theme": "graphite"
 }

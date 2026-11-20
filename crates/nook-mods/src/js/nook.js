@@ -9,6 +9,10 @@ const read = (topic) => call("read", { topic });
 export const media = () => read("media");
 /** Live coding-agent sessions (Claude, Codex, OpenCode, Cursor, Gemini, …). */
 export const agents = () => read("agents") ?? [];
+/** Local Codex turn status for the badge and the most recent result for the panel. */
+export const codexStatus = () => read("codexStatus");
+/** Recent GPT and Gemini activity from the local MAP app. */
+export const mapStatus = () => read("mapStatus");
 /** Running GUI apps: [{ bundleId, name, pid }]. */
 export const apps = () => read("apps") ?? [];
 /** Whether an app with this bundle id is running (e.g. "anomaly.hex"). */

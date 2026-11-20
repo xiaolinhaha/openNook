@@ -135,12 +135,27 @@ struct ProcInfo {
 
 /// Live coding-agent sessions on this machine. Cheap enough for a 2s poll.
 pub fn snapshot() -> Vec<AgentSession> {
+    snapshot_with_codex().0
+}
+
+/// Also reports the oldest live Codex runtime, including the desktop app-server.
+pub fn snapshot_with_codex() -> (Vec<AgentSession>, Option<u64>) {
     let procs = scan_processes();
     let sessions = assemble(&procs);
     if !sessions.is_empty() {
         LAST_AGENT_SEEN.store(unix_secs(), std::sync::atomic::Ordering::Relaxed);
     }
-    sessions
+    let codex_started = procs.values().filter(|proc| {
+        let codex = token_has_binary(&proc.name, "codex")
+            || proc.exe.as_ref().is_some_and(|path| token_has_binary(&path.to_string_lossy(), "codex"));
+        let helper = proc.argv.iter().any(|arg| matches!(arg.as_str(), "exec-server" | "mcp-server"));
+        // The quota widget starts a short-lived app-server of its own.
+        let quota = procs.get(&proc.ppid).is_some_and(|parent| {
+            parent.argv.iter().any(|arg| arg.ends_with("/codex/quota.sh"))
+        });
+        codex && !helper && !quota
+    }).map(|proc| proc.start_time).min();
+    (sessions, codex_started)
 }
 
 /// Unix time of the last scan that found a live session; drives the adaptive
@@ -294,6 +309,13 @@ fn scan_processes_macos() -> HashMap<u32, ProcInfo> {
             }
         }
     }
+    // The quota reader runs Codex under sh, which is not an agent scan seed.
+    let codex_shells: Vec<_> = detail.iter().filter_map(|pid| {
+        let process = by_pid.get(pid)?;
+        let parent = by_pid.get(&process.ppid)?;
+        (token_has_binary(&process.path, "codex") && parent.comm == "sh").then_some(parent.pid)
+    }).collect();
+    detail.extend(codex_shells);
     if detail.is_empty() {
         let mut cache = detail_cache().lock().unwrap_or_else(|e| e.into_inner());
         cache.clear();

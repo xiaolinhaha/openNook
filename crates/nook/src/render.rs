@@ -273,8 +273,11 @@ fn style(mut e: El, s: &Style, theme: &Theme, kind: Kind) -> El {
     if let Some(c) = &s.hover_bg {
         e = e.hover(theme.color(c));
     }
-    if s.cursor.as_deref() == Some("pointer") {
-        e = e.cursor(Cursor::Pointer);
+    match s.cursor.as_deref() {
+        Some("pointer") => e = e.cursor(Cursor::Pointer),
+        Some("grab") => e = e.cursor(Cursor::Grab),
+        Some("grabbing") => e = e.cursor(Cursor::Grabbing),
+        _ => {}
     }
     if let Some((d, b)) = s.spring {
         e = e.motion(Spring::new(d.clamp(0.05, 3.0), b.clamp(-0.9, 0.9)));
@@ -314,6 +317,24 @@ fn handlers(mut e: El, n: &Node, r: &Rcx) -> El {
     if let Some(id) = n.on.hover {
         let (mods, name) = (mods.clone(), r.name.to_owned());
         e = e.on_hover_change(move |_: &mut Island, hovered, _| mods.dispatch(&name, id, json!(hovered)));
+    }
+    if let Some(id) = n.on.drag {
+        let (mods, name) = (mods.clone(), r.name.to_owned());
+        e = e.on_drag(move |island: &mut Island, drag, _| {
+            let phase = match drag.phase {
+                rune::Phase::Down => {
+                    island.mod_dragging = true;
+                    "down"
+                }
+                rune::Phase::Move => "move",
+                rune::Phase::Up => {
+                    island.mod_dragging = false;
+                    "up"
+                }
+            };
+            mods.dispatch(&name, id, json!({ "phase": phase, "dx": drag.dx, "dy": drag.dy,
+                "startX": drag.start_x, "startY": drag.start_y, "cancelled": drag.cancelled() }));
+        });
     }
     if let Some(id) = n.on.key {
         let (mods, name) = (mods.clone(), r.name.to_owned());

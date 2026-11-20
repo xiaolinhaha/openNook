@@ -2505,6 +2505,7 @@ version = "2.0.0-alpha.2"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",
+ "chrono",
  "env_logger",
  "image",
  "libc",
@@ -2516,6 +2517,7 @@ dependencies = [
  "open",
  "reqwest",
  "rune",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

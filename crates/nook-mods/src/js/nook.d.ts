@@ -72,6 +72,17 @@ export interface Location {
 }
 
 export function media(): Media | null;
+export type CodexPhase = "offline" | "idle" | "running" | "succeeded" | "failed" | "interrupted";
+export function codexStatus(): {
+  status: CodexPhase;
+  detail: CodexPhase;
+  completions: { id: string; at: number; message: string }[];
+} | null;
+export function mapStatus(): {
+  running: boolean;
+  models: { family: "GPT" | "Gemini"; model: string; status: CodexPhase; at: number }[];
+  completions: { id: string; at: number; model: string }[];
+} | null;
 /** Where the person is: the place they set in Settings › General › Location, else the Mac's
  *  location (reduced accuracy). null until it's found, `{ error }` when it can't be. The
  *  first read of the Mac's location asks the person for permission. */

@@ -112,6 +112,8 @@ export interface Element {
 
   on_click(f: (event: {}, cx: Cx) => void): this;
   on_hover(f: (hovered: boolean, cx: Cx) => void): this;
+  /** Pointer travel since the press, in window points. startX/startY are relative to the element. */
+  on_drag(f: (event: { phase: "down" | "move" | "up"; startX: number; startY: number; dx: number; dy: number; cancelled: boolean }, cx: Cx) => void): this;
   /** Keys while this element, or a text field inside it, has the keyboard. Keys a field types
    *  into itself (letters, arrows, Backspace) stay the field's; Return submits it and Escape
    *  leaves it. */
@@ -215,8 +217,10 @@ export function shader(src: string, params?: number[]): Element;
 export interface Activity {
   leading?: Element | string | null;
   trailing?: Element | string | null;
-  /** Shown under the camera while the closed island is hovered: one short line. */
+  /** Shown under the camera on hover. Defaults to one line unless given a height. */
   detail?: Element | string | null;
+  /** A short notification. Give each new notification a distinct .id() to open it briefly. */
+  notice?: Element | null;
   /** Higher wins the closed island when layout.json doesn't order the mods. */
   priority?: number;
   /** Width of each side in points (the island picks one by default). */

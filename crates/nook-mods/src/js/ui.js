@@ -109,6 +109,7 @@ class Element {
   // Input. Handlers get (event, cx); call cx.notify() after changing what render reads.
   on_click(f) { this.on = { ...this.on, click: f }; return this.set("cursor", this.s.cursor ?? "pointer"); }
   on_hover(f) { this.on = { ...this.on, hover: f }; return this; }
+  on_drag(f) { this.on = { ...this.on, drag: f }; return this.set("cursor", this.s.cursor ?? "grab"); }
   /**
    * Keys while this element, or a text field inside it, has the keyboard: `f({ key, keystroke,
    * key_char, modifiers }, cx)`. Keys a field types into itself stay the field's.
