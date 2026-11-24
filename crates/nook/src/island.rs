@@ -447,7 +447,7 @@ impl Island {
         });
         self.outputs.insert(out.name.clone(), out);
         if new_notice && !self.expanded && self.active().is_some_and(|o| o.name == name) {
-            let duration = Duration::from_secs(5);
+            let duration = Duration::from_secs(8);
             self.compact_notice = Some((name, Instant::now() + duration));
             tx.wake_after(duration);
         }

@@ -270,7 +270,8 @@ fn parse_turn(line: &[u8]) -> Option<(Turn, Option<Completion>)> {
             .unwrap_or_default()
             .lines()
             .map(str::trim)
-            .find(|line| !line.is_empty())
+            .rev()
+            .find(|line| !line.is_empty() && !line.starts_with("```"))
             .unwrap_or_default()
             .chars()
             .take(96)
@@ -347,6 +348,15 @@ mod tests {
         assert_eq!(expired["status"], "idle");
         assert_eq!(expired["detail"], "failed");
         assert_eq!(expired["completions"].as_array().unwrap().len(), 1);
+        let completed = json!({
+            "type": "event_msg",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "task_complete",
+                "last_agent_message": "First line\n\nThe final sentence.\n"
+            }
+        });
+        assert_eq!(parse_turn(completed.to_string().as_bytes()).unwrap().1.unwrap().message, "The final sentence.");
         assert_eq!(
             parse_turn(event("turn_aborted", Value::Null).to_string().as_bytes())
                 .unwrap()

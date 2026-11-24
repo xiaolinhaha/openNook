@@ -22,18 +22,12 @@ function codexBadge(phase) {
     .child(text(label).text_size(8).font_semibold().text_color(color));
 }
 
-function completionRow(item, preview = false) {
-  const time = new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  const source = item.model ? "MAP" : "Codex";
-  const message = item.model
-    ? `${displayModel(item.model)} 已完成`
-    : item.message.replace(/^[#>*\s]+/, "") || "Codex 任务已完成";
-  return row().id(`codex-completion/${item.id}`).w_full().h(20).px(6).gap(6).items_center()
-    .when(!preview, (r) => r.rounded(5).bg("#ffffff0d"))
-    .child(item.model ? image(MAP_ICON).size(13) : icon("check", 11).color("#30d158"))
-    .when(preview, (r) => r.child(text(`${source} 已完成`).text_size(10).font_semibold().text_color("#30d158").flex_none()))
-    .child(text(message).flex_1().min_w(0).text_size(10).text_color("muted").truncate())
-    .when(!preview, (r) => r.child(text(time).text_size(9).text_color("faint").tabular_nums().flex_none()));
+function runningCodexRow(model) {
+  return row().id("codex-running").w_full().h(20).px(6).gap(6).items_center()
+    .rounded(5).bg("#ffffff0d")
+    .child(icon("agent-codex", 13).color("#64d2ff"))
+    .child(text(displayModel(model)).flex_1().min_w(0).text_size(10).font_medium().truncate())
+    .child(codexBadge("running"));
 }
 
 function displayModel(slug) {
@@ -144,6 +138,10 @@ export default class Dashboard extends View {
     this.quota = null;
     this.quotaBusy = false;
     this.model = null;
+    this.completionsReady = false;
+    this.seenCompletions = new Set();
+    this.completionStartedAt = Date.now();
+    this.activeCompletion = null;
 
     // Widget Hub & Dynamic Slots State
     this.editing = false;
@@ -385,7 +383,26 @@ export default class Dashboard extends View {
     cx.timer.every(60_000, this.refreshWeather);
     cx.timer.every(300_000, this.refreshQuota);
     cx.timer.every(1000, (cx) => {
-      if (island()?.expanded) cx.notify();
+      const codex = codexStatus();
+      const map = mapStatus();
+      const completions = [...(codex?.completions ?? []), ...(map?.completions ?? [])];
+      let changed = false;
+      if (this.completionsReady) {
+        const fresh = completions
+          .filter((item) => !this.seenCompletions.has(item.id) && item.at >= this.completionStartedAt)
+          .sort((a, b) => b.at - a.at)[0];
+        if (fresh) {
+          this.activeCompletion = { item: fresh, until: Date.now() + 8000, startedAt: Date.now() };
+          changed = true;
+        }
+      }
+      completions.forEach((item) => this.seenCompletions.add(item.id));
+      this.completionsReady = true;
+      if (this.activeCompletion && Date.now() >= this.activeCompletion.until) {
+        this.activeCompletion = null;
+        changed = true;
+      }
+      if (changed || island()?.expanded) cx.notify();
     });
   }
 
@@ -393,22 +410,30 @@ export default class Dashboard extends View {
 
   activity() {
     const state = codexStatus();
-    const phase = state?.status ?? "offline";
+    const phase = state?.status === "succeeded" && !this.activeCompletion ? "idle" : (state?.status ?? "offline");
     const map = mapStatus();
     const models = map?.models ?? [];
     const activeMap = models
       .filter((model) => model.status !== "idle" && model.status !== "offline")
       .sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || b.at - a.at)[0];
     const [label, color] = CODEX_PHASES[phase];
-    const mapPhase = activeMap?.status ?? (map?.running ? "idle" : "offline");
+    const mapPhase = activeMap?.status === "succeeded" && !this.activeCompletion
+      ? "idle"
+      : (activeMap?.status ?? (map?.running ? "idle" : "offline"));
     const [mapLabel, mapColor] = CODEX_PHASES[mapPhase];
-    const completions = [...(state?.completions ?? []), ...(map?.completions ?? [])]
-      .sort((a, b) => b.at - a.at).slice(0, 3);
-    const latest = completions[0];
-    const detailRows = [...models.map(mapModelRow), ...completions.map((item) => completionRow(item))];
-    const detail = detailRows.length
-      ? col().w_full().h(24 * detailRows.length - 4).gap(4).children(detailRows)
-      : text("仪表盘").text_size(11).text_color("muted").truncate();
+    const detailRows = [
+      ...(phase === "running" ? [runningCodexRow(this.sessions().find((session) => session.model)?.model ?? this.model)] : []),
+      ...models.filter((model) => model.status === "running").map(mapModelRow),
+    ];
+    const completion = this.activeCompletion?.item;
+    const completionMessage = completion?.model
+      ? `${displayModel(completion.model)} 已完成`
+      : completion?.message || "任务已完成";
+    const completionLine = (id) => row().id(id).w(340).h(30).clip().items_center()
+      .child(text(completionMessage).w(340).text_size(12).text_color("fg").truncate());
+    const detail = completion
+      ? completionLine(`completion-detail/${completion.id}`)
+      : detailRows.length ? col().w_full().h(24 * detailRows.length - 4).gap(4).children(detailRows) : null;
     return {
       width: 64,
       leading: row().id("dashboard-topbar-codex").gap(5).items_center()
@@ -420,7 +445,7 @@ export default class Dashboard extends View {
           .when(activeMap, (badge) => badge.child(text(activeMap.family).text_size(7).text_color("muted"))))
         .child(image(MAP_ICON).size(14)),
       detail,
-      notice: latest && Date.now() - latest.at < 6_000 ? completionRow(latest, true) : null,
+      notice: completion ? completionLine(`completion-notice/${completion.id}`) : null,
       priority: 10,
     };
   }
@@ -456,6 +481,7 @@ export default class Dashboard extends View {
     const topH = 88;
     const bottomH = 48;
     const isEdit = this.editing;
+
 
     // Dynamic Skin Applicator
     const applySkin = (el, id, w, h, radius, isBottom) => {
