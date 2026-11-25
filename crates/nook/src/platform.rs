@@ -132,19 +132,25 @@ pub fn watch_island_input(window: u32, on: impl Fn(IslandInput) + 'static) {
             struct Point { x: f64, y: f64 }
             #[repr(C)]
             #[derive(Clone, Copy)]
-            struct Rect { origin: Point, size: Point }
+            struct Size { w: f64, h: f64 }
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct Rect { origin: Point, size: Size }
             unsafe impl objc2::Encode for Point {
                 const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
             }
+            unsafe impl objc2::Encode for Size {
+                const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+            }
             unsafe impl objc2::Encode for Rect {
-                const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGRect", &[Point::ENCODING, Point::ENCODING]);
+                const ENCODING: objc2::Encoding = objc2::Encoding::Struct("CGRect", &[Point::ENCODING, Size::ENCODING]);
             }
             // Window points from the panel's top-left (AppKit's run from its bottom-left).
             let at = || -> (f32, f32) {
                 let at: Point = msg_send![event, locationInWindow];
                 let win: *mut AnyObject = msg_send![event, window];
-                let frame: Rect = if win.is_null() { Rect { origin: Point { x: 0.0, y: 0.0 }, size: Point { x: 0.0, y: 0.0 } } } else { msg_send![win, frame] };
-                (at.x as f32, (frame.size.y - at.y) as f32)
+                let frame: Rect = if win.is_null() { Rect { origin: Point { x: 0.0, y: 0.0 }, size: Size { w: 0.0, h: 0.0 } } } else { msg_send![win, frame] };
+                (at.x as f32, (frame.size.h - at.y) as f32)
             };
             if kind == 22 {
                 let precise: bool = msg_send![event, hasPreciseScrollingDeltas];
@@ -192,6 +198,36 @@ pub fn reduce_transparency() -> bool {
     }
     #[cfg(not(target_os = "macos"))]
     false
+}
+
+/// The desktop image for the display hosting the island, without capturing other windows.
+pub fn desktop_wallpaper() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        let pool: *mut AnyObject = msg_send![class!(NSAutoreleasePool), new];
+        let ws: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
+        let target = crate::island::pick(crate::island::display_mode(), &displays(), pointer()).map(|d| d.id);
+        let mut screen: *mut AnyObject = msg_send![class!(NSScreen), mainScreen];
+        let count: usize = msg_send![screens, count];
+        for index in 0..count {
+            let candidate: *mut AnyObject = msg_send![screens, objectAtIndex: index];
+            let description: *mut AnyObject = msg_send![candidate, deviceDescription];
+            let number: *mut AnyObject = msg_send![description, objectForKey: mac::ns_string("NSScreenNumber")];
+            let id: u32 = msg_send![number, unsignedIntValue];
+            if Some(id) == target { screen = candidate; break; }
+        }
+        let path = if screen.is_null() { None } else {
+            let url: *mut AnyObject = msg_send![ws, desktopImageURLForScreen: screen];
+            if url.is_null() { None } else { mac::string(msg_send![url, path]).map(PathBuf::from) }
+        };
+        let _: () = msg_send![pool, drain];
+        path
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 /// An app's icon in its light (Aqua) variant, as straight-alpha RGBA, `px` square. The island is

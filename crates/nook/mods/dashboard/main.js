@@ -142,14 +142,14 @@ export default class Dashboard extends View {
     this.seenCompletions = new Set();
     this.completionStartedAt = Date.now();
     this.activeCompletion = null;
-
+    this.hoveredCalendarDay = null;
     // Widget Hub & Dynamic Slots State
     this.editing = false;
     this.widgetDrag = null;
     this.pickerOpen = false;
     this.pickerRow = "top";
 
-    const defaultTop = ["soda-music", "codex", "clock", "map"];
+    const defaultTop = ["codex", "clock", "map"];
     const defaultBottom = ["battery", "network", "rings", "launchers"];
     const defaultPool = ["music"];
 
@@ -442,7 +442,7 @@ export default class Dashboard extends View {
       trailing: row().id("dashboard-topbar-map").gap(5).items_center()
         .child(col().items_end()
           .child(text(mapLabel).text_size(9).font_semibold().text_color(mapColor))
-          .when(activeMap, (badge) => badge.child(text(activeMap.family).text_size(7).text_color("muted"))))
+        .when(activeMap, (badge) => badge.child(text(activeMap.family).text_size(7).text_color("muted"))))
         .child(image(MAP_ICON).size(14)),
       detail,
       notice: completion ? completionLine(`completion-notice/${completion.id}`) : null,
@@ -463,12 +463,28 @@ export default class Dashboard extends View {
     const memPct = this.memoryPercent;
     const now = new Date();
     const clock = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    const date = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
 
-    const weatherTemp = this.weather?.temperature ? `${Math.round(this.weather.temperature)}°` : "17°";
-    const weatherPlace = this.weather?.place ?? "上海市";
-    const weatherDesc = this.weather?.code === 0 ? "晴" : (this.weather?.code <= 3 ? "多云" : "阴");
-    const weatherText = `☁️ ${weatherTemp} ${weatherDesc} · ${weatherPlace}`;
+    const weatherCode = Number(this.weather?.code);
+    const weatherDesc = weatherCode === 0 ? "晴朗"
+      : weatherCode === 1 ? "大部晴朗"
+        : weatherCode <= 3 ? "多云"
+          : weatherCode <= 48 ? "有雾"
+            : weatherCode <= 67 ? "有雨"
+              : weatherCode <= 77 ? "有雪"
+                : weatherCode <= 82 ? "阵雨"
+                  : weatherCode <= 86 ? "阵雪"
+                    : weatherCode <= 99 ? "雷雨" : "天气";
+    const weatherIcon = weatherCode === 0 ? "sun"
+      : weatherCode <= 2 ? "cloud-sun"
+        : weatherCode <= 3 ? "cloud"
+          : weatherCode <= 48 ? "cloud-fog"
+            : weatherCode <= 67 ? "cloud-rain"
+              : weatherCode <= 77 ? "cloud-snow"
+                : weatherCode <= 82 ? "cloud-drizzle"
+                  : weatherCode <= 86 ? "cloud-snow"
+                    : weatherCode <= 99 ? "cloud-lightning" : "cloud";
+    const weatherLow = this.weather?.low == null ? "—" : `${Math.round(this.weather.low)}°`;
+    const weatherHigh = this.weather?.high == null ? "—" : `${Math.round(this.weather.high)}°`;
 
     const m = media();
     const isPlaying = !!m?.playing;
@@ -478,7 +494,7 @@ export default class Dashboard extends View {
     const width = island()?.page?.width ?? 528;
     const innerW = width - 20; // 508px accounting for px(10) left/right
     const totalGap = 7;
-    const topH = 88;
+    const topH = 104;
     const bottomH = 48;
     const isEdit = this.editing;
 
@@ -527,6 +543,23 @@ export default class Dashboard extends View {
       if (count === 0) return {};
       const addW = hasAdd ? 52 + totalGap : 0;
       const netW = Math.max(80, availableW - (count - 1) * totalGap - addW);
+      if (ids.includes("clock")) {
+        const fixed = ids.filter((id) => id !== "clock");
+        const total = fixed.reduce((sum, id) => sum + (defaultWeights[id] || 100), 0);
+        const budget = Math.min(total, Math.max(0, netW - 160));
+        const scale = total > 0 ? budget / total : 0;
+        const res = {};
+        let used = 0;
+        fixed.forEach((id, index) => {
+          const width = index === fixed.length - 1
+            ? budget - used
+            : Math.round(budget * (defaultWeights[id] || 100) / total);
+          res[id] = width;
+          used += width;
+        });
+        res.clock = netW - used;
+        return res;
+      }
       let sum = 0;
       for (const id of ids) sum += defaultWeights[id] || 100;
       const res = {};
@@ -654,10 +687,82 @@ export default class Dashboard extends View {
           .when(!!session && !isEdit, (r) => r.child(icon("chevron-right", 9).color("muted"))));
 
     // 4. Clock Card
-    const buildClock = (w) => applySkin(col(), "clock", w, topH, 16, false).items_center().justify_between()
-      .child(row().w_full().items_center().child(text(date).text_size(8).font_medium().text_color("#e6e4dc").truncate()))
-      .child(text(clock).text_size(26).font_bold().text_color("#ffe28a").tabular_nums())
-      .child(text(weatherText).text_size(7.5).font_medium().text_color("#8e8e93").truncate());
+    const buildClock = (w) => {
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const weekCount = Math.ceil((firstDay + daysInMonth) / 7);
+      const cellSize = 9;
+      const calendarGap = 4;
+      const hoveredDay = this.hoveredCalendarDay;
+      const weekLabels = ["S", "M", "T", "W", "T", "F", "S"];
+      const weekdayRow = row().gap(calendarGap).items_center();
+      for (let day = 0; day < 7; day++) {
+        weekdayRow.child(row().w(cellSize).h(9).items_center().justify_center()
+          .child(text(weekLabels[day]).text_size(6.5).font_semibold()
+            .text_color(day === now.getDay() ? "#ff9ebb" : "#66686e")));
+      }
+      const monthRows = [];
+      for (let week = 0; week < weekCount; week++) {
+        const cells = row().gap(calendarGap).items_center();
+        for (let column = 0; column < 7; column++) {
+          const day = week * 7 + column - firstDay + 1;
+          const inMonth = day >= 1 && day <= daysInMonth;
+          const isToday = inMonth && day === now.getDate();
+          const passed = inMonth && day < now.getDate();
+          const color = isToday ? "#9be9b5" : passed ? "#39c96a" : "#292b2e";
+          const isHovered = inMonth && hoveredDay === day;
+          const cell = div().id(`calendar-day/${week}/${column}`).size(cellSize, cellSize).rounded(2)
+            .bg(inMonth ? color : "#00000000")
+            .when(isHovered, (el) => el.border(1, "#ffffff"));
+          if (inMonth) {
+            const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            cell.cursor_pointer().hover_bg("#ffffff22")
+              .on_hover((hovering, cx) => {
+                if (hovering) this.hoveredCalendarDay = day;
+                else if (this.hoveredCalendarDay === day) this.hoveredCalendarDay = null;
+                cx.notify();
+              })
+              .on_click(() => open(`calshow:${date}`));
+          }
+          cells.child(cell);
+        }
+        monthRows.push(cells);
+      }
+      const leftWidth = 76;
+      const left = col().w(leftWidth).h_full().justify_between()
+        .child(row().w_full().gap(4).items_center()
+          .child(icon(weatherIcon, 9).color("#ff9ebb"))
+          .child(text(weatherDesc).text_size(7.5).font_semibold().text_color("#ff9ebb").flex_1().min_w(0).truncate()))
+        .child(row().w_full().items_center().justify_center()
+          .child(text(clock.slice(0, 3)).text_size(21).font_bold().text_color("#f5f5f7").tabular_nums())
+          .child(text(clock.slice(3)).text_size(21).font_bold().text_color("#ff922e").tabular_nums()))
+        .child(row().w_full().gap(7).items_center().justify_center()
+          .child(row().gap(2).items_center()
+            .child(text("▼").text_size(6.5).font_bold().text_color("#9de4ee"))
+            .child(text(weatherLow).text_size(8).font_semibold().text_color("#9de4ee").tabular_nums()))
+          .child(row().gap(2).items_center()
+            .child(text("▲").text_size(6.5).font_bold().text_color("#ff9ebb"))
+            .child(text(weatherHigh).text_size(8).font_semibold().text_color("#ff9ebb").tabular_nums())));
+      const calendar = col().flex_none().h_full().justify_between()
+        .child(weekdayRow);
+      for (const cells of monthRows) calendar.child(cells);
+      const card = row().id("clock").w(w).h(topH).p(7).rounded(16).clip().bg("#000000").items_center().gap(12)
+        .child(left)
+        .child(calendar);
+      if (hoveredDay != null) {
+        const hoveredDate = new Date(now.getFullYear(), now.getMonth(), hoveredDay);
+        const weekday = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"][hoveredDate.getDay()];
+        const tooltipText = `${now.getMonth() + 1}月${hoveredDay}日 · ${weekday}`;
+        const hoverWeek = Math.floor((firstDay + hoveredDay - 1) / 7);
+        const hoverColumn = (firstDay + hoveredDay - 1) % 7;
+        const tooltipLeft = Math.max(0, leftWidth + 12 + hoverColumn * (cellSize + calendarGap) - 110);
+        const tooltipTop = Math.max(0, 10 + hoverWeek * 13 - 10);
+        card.child(row().id("calendar-tooltip").pin(tooltipLeft, tooltipTop, null, null)
+          .px(10).py(5).rounded(9).bg("#383838ee").shadow(0, 7, "#00000066")
+          .child(text(tooltipText).text_size(10).font_semibold().text_color("#f5f5f7")));
+      }
+      return card;
+    };
 
     const buildMap = (w) => {
       const state = mapStatus();
@@ -781,7 +886,7 @@ export default class Dashboard extends View {
     };
 
     const weights = {
-      "soda-music": 95, "music": 88, "codex": 130, "clock": 120, "map": 151,
+      "soda-music": 95, "music": 88, "codex": 130, "map": 151,
       "battery": 82, "network": 88, "rings": 140, "launchers": 160,
     };
     const rowGap = 6;
@@ -916,4 +1021,5 @@ export default class Dashboard extends View {
         b.child(row().w_full().justify_end().child(editButton(24))))
       .child(grid);
   }
+
 }

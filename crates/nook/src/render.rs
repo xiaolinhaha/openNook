@@ -72,6 +72,9 @@ pub fn node(n: &Node, r: &Rcx) -> El {
         e = e.key(format!("m/{}/#input-{}", r.name, n.v.as_deref().unwrap_or_default()));
     }
     e = style(e, s, r.theme, n.t);
+    if r.name == "app-launcher" && n.k.as_deref() == Some("app-grid-search") {
+        e = e.backdrop_blur(12.0);
+    }
     handlers(e, n, r)
 }
 
@@ -179,7 +182,11 @@ fn icon_el(name: &str, s: &Style, r: &Rcx) -> El {
 
 fn image_el(src: &str, s: &Style, r: &Rcx) -> El {
     let size = size_of(s.w, 32.0).max(size_of(s.h, 32.0));
-    let base = el().fill(r.theme.color("raised"));
+    let base = if r.name == "app-launcher" && (src.starts_with("app:") || src.starts_with("app-file:")) {
+        el()
+    } else {
+        el().fill(r.theme.color("raised"))
+    };
     match r.images.and_then(|i| i.get(src, r.dir, size)) {
         Some(img) => base.pixels_fit(img.pixels(), SurfaceFit::Fill),
         None => base,

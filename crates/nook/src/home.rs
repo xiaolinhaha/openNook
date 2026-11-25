@@ -16,13 +16,23 @@ const JSCONFIG: &str = r#"{
 "#;
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into())
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "/".into())
 }
 
 /// `$OPENNOOK_HOME`, else `$XDG_CONFIG_HOME/opennook`, else `~/.config/opennook`.
 pub fn app_dir() -> PathBuf {
-    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    env("OPENNOOK_HOME").unwrap_or_else(|| env("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")).join("opennook"))
+    let env = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    env("OPENNOOK_HOME").unwrap_or_else(|| {
+        env("XDG_CONFIG_HOME")
+            .unwrap_or_else(|| home().join(".config"))
+            .join("opennook")
+    })
 }
 
 pub fn config() -> nook_mods::Config {
@@ -44,14 +54,21 @@ pub fn write_workspace() -> std::io::Result<Vec<String>> {
     // Editors resolve `nook` and `nook/ui` to the type files.
     for found in files::scan(&dir.join("mods")) {
         let path = found.dir.join("jsconfig.json");
-        if !path.exists() && !SHIPPED_MODS.iter().any(|(p, _)| p.starts_with(&format!("{}/", found.name))) {
+        if !path.exists()
+            && !SHIPPED_MODS
+                .iter()
+                .any(|(p, _)| p.starts_with(&format!("{}/", found.name)))
+        {
             let _ = std::fs::write(path, JSCONFIG);
         }
     }
     if !dir.join("layout.json").exists() {
         std::fs::write(dir.join("layout.json"), DEFAULT_LAYOUT)?;
     }
-    Ok(clones.into_iter().map(|c| format!("Your edits to a shipped mod were kept as mods/{c}.")).collect())
+    Ok(clones
+        .into_iter()
+        .map(|c| format!("Your edits to a shipped mod were kept as mods/{c}."))
+        .collect())
 }
 
 /// What hovering the closed island does.
@@ -86,7 +103,9 @@ impl TryFrom<HoverSetting> for HoverMode {
                 "peek" => Ok(Self::Peek),
                 "open" => Ok(Self::Open),
                 "none" => Ok(Self::None),
-                other => Err(format!("hover: {other:?} isn't \"peek\", \"open\" or \"none\"")),
+                other => Err(format!(
+                    "hover: {other:?} isn't \"peek\", \"open\" or \"none\""
+                )),
             },
         }
     }
@@ -110,6 +129,8 @@ pub enum DisplayMode {
 pub struct IslandOptions {
     /// Width of the open island, in points.
     pub width: f32,
+    #[serde(rename = "contentPadding")]
+    pub content_padding: f32,
     pub hover: HoverMode,
     #[serde(rename = "hoverDelayMs")]
     pub hover_delay_ms: u64,
@@ -117,6 +138,8 @@ pub struct IslandOptions {
     pub collapse_delay_ms: u64,
     /// Liquid Glass under the open island (off under Reduce Transparency).
     pub glass: bool,
+    #[serde(rename = "backgroundStyle")]
+    pub background_style: Option<String>,
     /// A tap on the trackpad when a swipe opens the island.
     pub haptics: bool,
     pub display: DisplayMode,
@@ -133,7 +156,20 @@ pub struct IslandOptions {
 
 impl Default for IslandOptions {
     fn default() -> Self {
-        Self { width: 560.0, hover: HoverMode::Peek, hover_delay_ms: 120, collapse_delay_ms: 200, glass: true, haptics: true, display: DisplayMode::Notch, hide_in_full_screen: true, glass_tint: 0.5, style: Default::default() }
+        Self {
+            width: 560.0,
+            content_padding: 16.0,
+            hover: HoverMode::Peek,
+            hover_delay_ms: 120,
+            collapse_delay_ms: 200,
+            glass: true,
+            background_style: None,
+            haptics: true,
+            display: DisplayMode::Notch,
+            hide_in_full_screen: true,
+            glass_tint: 0.5,
+            style: Default::default(),
+        }
     }
 }
 
@@ -195,7 +231,8 @@ pub fn read_layout(dir: &Path) -> Result<(Layout, Value), String> {
         .map_err(|e| format!("layout.json: {e}"))
         .and_then(|t| {
             let raw: Value = serde_json::from_str(&t).map_err(|e| format!("layout.json: {e}"))?;
-            let layout: Layout = serde_json::from_value(raw.clone()).map_err(|e| format!("layout.json: {e}"))?;
+            let layout: Layout =
+                serde_json::from_value(raw.clone()).map_err(|e| format!("layout.json: {e}"))?;
             Ok((layout, raw))
         });
     let error = dir.join("layout.error");
@@ -204,7 +241,10 @@ pub fn read_layout(dir: &Path) -> Result<(Layout, Value), String> {
             let _ = std::fs::remove_file(error);
         }
         Err(e) => {
-            let _ = write_if_changed(&error, format!("{e}\nThe island keeps the last layout that worked.\n"));
+            let _ = write_if_changed(
+                &error,
+                format!("{e}\nThe island keeps the last layout that worked.\n"),
+            );
         }
     }
     result
@@ -213,21 +253,35 @@ pub fn read_layout(dir: &Path) -> Result<(Layout, Value), String> {
 /// When layout.json or a theme file last changed: either restyles the island.
 pub fn layout_stamp(dir: &Path) -> Option<std::time::SystemTime> {
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    let themes = std::fs::read_dir(dir.join("themes")).into_iter().flatten().flatten().filter_map(|e| modified(&e.path()));
+    let themes = std::fs::read_dir(dir.join("themes"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| modified(&e.path()));
     // The folder's own time catches a theme being deleted.
-    modified(&dir.join("layout.json")).into_iter().chain(modified(&dir.join("themes"))).chain(themes).max()
+    modified(&dir.join("layout.json"))
+        .into_iter()
+        .chain(modified(&dir.join("themes")))
+        .chain(themes)
+        .max()
 }
 
 /// Changes layout.json, read fresh so an edit in between isn't lost, and returns what it wrote.
 /// The layout watcher applies it.
 pub fn edit_layout(f: impl FnOnce(&mut Value)) -> Value {
     let path = app_dir().join("layout.json");
-    let mut v: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut v: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
     if !v.is_object() {
         v = serde_json::json!({});
     }
     f(&mut v);
-    let _ = write_if_changed(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n");
+    let _ = write_if_changed(
+        &path,
+        serde_json::to_string_pretty(&v).unwrap_or_default() + "\n",
+    );
     v
 }
 
@@ -257,9 +311,13 @@ pub fn patch_layout(patch: &Value) -> Result<(), String> {
         return Err("layout.patch: `patch` must be an object".into());
     }
     let path = app_dir().join("layout.json");
-    let mut v: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut v: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
     merge_patch(&mut v, patch);
-    serde_json::from_value::<Layout>(v.clone()).map_err(|e| format!("layout.patch: the result isn't a valid layout.json: {e}"))?;
+    serde_json::from_value::<Layout>(v.clone())
+        .map_err(|e| format!("layout.patch: the result isn't a valid layout.json: {e}"))?;
     edit_layout(move |l| *l = v);
     Ok(())
 }
@@ -272,8 +330,14 @@ mod tests {
     #[test]
     fn merge_patch_merges_replaces_and_deletes() {
         let mut v = json!({ "island": { "width": 560, "style": { "wings": 14 } }, "hidden": ["a"], "theme": "ember" });
-        merge_patch(&mut v, &json!({ "island": { "style": { "wings": null, "glow": { "color": "accent" } } }, "hidden": [], "theme": null }));
-        assert_eq!(v, json!({ "island": { "width": 560, "style": { "glow": { "color": "accent" } } }, "hidden": [] }));
+        merge_patch(
+            &mut v,
+            &json!({ "island": { "style": { "wings": null, "glow": { "color": "accent" } } }, "hidden": [], "theme": null }),
+        );
+        assert_eq!(
+            v,
+            json!({ "island": { "width": 560, "style": { "glow": { "color": "accent" } } }, "hidden": [] })
+        );
     }
 
     #[test]
@@ -285,6 +349,9 @@ mod tests {
         assert_eq!(l.island.style.compact_radius, Some(10.0));
         assert_eq!(l.island.style.wings, Some(0.0));
         assert_eq!(l.theme, json!("midnight"));
-        assert!(serde_json::from_value::<Layout>(json!({ "island": { "style": { "radius": 3 } } })).is_err());
+        assert!(
+            serde_json::from_value::<Layout>(json!({ "island": { "style": { "radius": 3 } } }))
+                .is_err()
+        );
     }
 }

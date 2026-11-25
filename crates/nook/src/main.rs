@@ -31,10 +31,12 @@ openNook: a Dynamic Island for the notch, made of mods.
 
 usage:
   opennook                      run the island
+  opennook --apps               open the app launcher full screen
   opennook check <mod folder>   load a mod, let it settle, report its views or its error
   opennook shot [file.png]      render the island to a PNG (default: island.png)
       --open                      the open island (default: closed)
       --mod <name>                the open island showing this mod's page
+      --fullscreen                render the app launcher across its display\n\
       --hover                     the closed island as hovered (its peek)
       --settings [--page mods|yours|about] [--onboarding 0|1]   the Settings window instead
       --wait <ms>                 how long mods get to settle first (default 2500)
@@ -138,20 +140,27 @@ fn run() {
         eprintln!("openNook is already running (pid {pid}).");
         std::process::exit(1);
     }
-    let (island, store) = prepare();
-    let canvas = (island.canvas_w(), CANVAS_H);
+    let (mut island, store) = prepare();
+    let launch_apps = std::env::args().any(|arg| arg == "--apps");
+    if launch_apps {
+        island.launcher_fullscreen = Some(island.notch.screen);
+        island.selected = Some("app-launcher".into());
+        island.expanded = true;
+        store.publish("island", island.state_json());
+    }
+    let canvas = island.launcher_fullscreen.unwrap_or((island.canvas_w(), CANVAS_H));
     rune::run_windows_with(RunOptions { accessory: true }, move |_| {
         let mut app = App::new(AppSpec::new("openNook", (1.0, 1.0), || (), |_, _| el())).windowless();
         let start = island::pick(island::display_mode(), &platform::displays(), platform::pointer())
             .map_or(DisplayTarget::Primary, |d| DisplayTarget::Native(rune::NativeDisplayId::MacOS(d.id)));
         // Keys on demand: a mod's focused text field asks for them; nothing else takes them.
-        let options = OverlayOptions { display: start, input: OverlayInput::Regions, level: OverlayLevel::AboveStatus, prewarm: true, keys: KeyPolicy::OnDemand, ..Default::default() };
+        let options = OverlayOptions { placement: launch_apps.then_some(rune::OverlayPlacement::FullScreen), display: start, input: OverlayInput::Regions, level: OverlayLevel::AboveStatus, prewarm: true, keys: KeyPolicy::OnDemand, ..Default::default() };
         // Scrolls and right-clicks: Rune routes only left presses to an overlay, so the panel's
         // own events are watched once it exists.
         let slot: Arc<std::sync::OnceLock<OverlayHandle<Island>>> = Arc::default();
         let created = slot.clone();
         let overlay = app.overlay(
-            OverlaySpec::new("openNook", canvas, island::view).options(options).poll(island::poll).setup(island_setup).on_focus(island::window_focus)
+            OverlaySpec::new("openNook", canvas, island::view).options(options).poll(island::poll).setup(island_setup).on_focus(island::window_focus).on_key(island::key)
                 .compositor(shader::Shaders::default())
                 .on_created(move |c| {
                     let Some(window) = c.window_number else { return };
@@ -170,8 +179,14 @@ fn run() {
             island,
         );
         let _ = slot.set(overlay.clone());
+        let presentation = overlay.clone();
         let (ask, give) = (overlay.clone(), overlay.clone());
         overlay.update(move |s, _| {
+            s.present_launcher = Some(Box::new(move |fullscreen, size| {
+                presentation.set_placement(fullscreen.then_some(rune::OverlayPlacement::FullScreen));
+                presentation.resize(size);
+                if fullscreen { presentation.request_keys(); }
+            }));
             s.request_keys = Some(Box::new(move || ask.request_keys()));
             s.release_keys = Some(Box::new(move || {
                 if let Some(window) = give.window_number() {
@@ -206,6 +221,7 @@ fn run() {
         watch_layout(overlay.clone(), store_for_layout);
         watch_displays(overlay.clone());
         overlay.show();
+        if launch_apps { overlay.request_keys(); }
         let probe = overlay.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1500));
@@ -425,6 +441,13 @@ fn shot(args: &[String]) -> i32 {
     let open = args.iter().any(|a| a == "--open") || flag(args, "--mod").is_some();
     let wait = flag(args, "--wait").and_then(|w| w.parse().ok()).unwrap_or(2500);
     let (mut island, store) = prepare();
+    let fullscreen = args.iter().any(|a| a == "--fullscreen");
+    if fullscreen {
+        island.launcher_fullscreen = Some(island.notch.screen);
+        island.expanded = true;
+        island.selected = Some("app-launcher".into());
+        store.publish("island", island.state_json());
+    }
     let outputs: Arc<Mutex<BTreeMap<String, Output>>> = Arc::default();
     let inputs: Arc<Mutex<Vec<(String, u64, Value)>>> = Arc::default();
     struct Collect(Arc<Mutex<BTreeMap<String, Output>>>, Arc<Mutex<Vec<(String, u64, Value)>>>);
@@ -463,16 +486,17 @@ fn shot(args: &[String]) -> i32 {
     for (name, id, op) in inputs.lock().unwrap().iter() {
         island.fields.apply(name, *id, op);
     }
-    island.expanded = open;
+    island.expanded = open || fullscreen;
     island.hover = args.iter().any(|a| a == "--hover");
     if let Some(m) = flag(args, "--mod") {
         island.select(&m);
     }
-    let size = format!("{}x{}", island.canvas_w(), CANVAS_H);
+    let canvas_h = island.launcher_fullscreen.map_or(CANVAS_H, |(_, height)| height);
+    let size = format!("{}x{}", island.canvas_w(), canvas_h);
     // After `--`: Rune's own tooling flags in place of the still (`--script s.json --strip x.png
     // --frames 30 --every 2`, `--tree t.json`, …), for looking at motion.
     let rune_args: Vec<String> = args.iter().skip_while(|a| *a != "--").skip(1).cloned().collect();
-    let spec = AppSpec { setup: Some(island_setup), ..AppSpec::new("openNook", (island.canvas_w(), CANVAS_H), || Island::new(Notch::detect(island::display_mode()), home::Layout::default()), island::view) };
+    let spec = AppSpec { setup: Some(island_setup), ..AppSpec::new("openNook", (island.canvas_w(), canvas_h), || Island::new(Notch::detect(island::display_mode()), home::Layout::default()), island::view) };
     let path = PathBuf::from(&out);
     App::new(spec)
         .init(move || island)

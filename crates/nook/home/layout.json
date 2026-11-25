@@ -14,7 +14,8 @@
     "dashboard"
   ],
   "expanded": [
-    "dashboard"
+    "dashboard",
+    "app-launcher"
   ],
   "hidden": [
     "codex",

@@ -12,7 +12,10 @@ use crate::render::{self, Rcx, Scroller};
 use crate::theme::Theme;
 use nook_mods::{IslandStyle, Mods, Output};
 use rune::tok::TextStyle;
-use rune::{Color, Cx, El, PopupItem, PopupMenu, Spring, SpringPair, SystemMaterial, Transition, Tx, WheelEvent, col, el, icon, row, spacer, text};
+use rune::{
+    Color, Cx, El, PopupItem, PopupMenu, Spring, SpringPair, SystemMaterial, Transition, Tx,
+    WheelEvent, col, el, icon, row, spacer, text,
+};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -75,36 +78,70 @@ impl Notch {
             Some(d) => Self::of(d),
             None => {
                 let info = nook_core::notch::get_notch_info();
-                let (w, h) = if info.has_notch { (info.notch_width as f32, info.notch_height as f32) } else { (200.0, 32.0) };
-                Self { w, h, has: info.has_notch, screen: (info.screen_width as f32, info.screen_height as f32) }
+                let (w, h) = if info.has_notch {
+                    (info.notch_width as f32, info.notch_height as f32)
+                } else {
+                    (200.0, 32.0)
+                };
+                Self {
+                    w,
+                    h,
+                    has: info.has_notch,
+                    screen: (info.screen_width as f32, info.screen_height as f32),
+                }
             }
         }
     }
 
     pub fn of(d: &crate::platform::Display) -> Self {
         match d.notch {
-            Some((w, h)) => Self { w: w as f32, h: h as f32, has: true, screen: (d.w as f32, d.h as f32) },
+            Some((w, h)) => Self {
+                w: w as f32,
+                h: h as f32,
+                has: true,
+                screen: (d.w as f32, d.h as f32),
+            },
             // Without a camera housing, a virtual one the size of a MacBook's.
-            None => Self { w: (d.w * 0.1).clamp(180.0, 220.0) as f32, h: 32.0, has: false, screen: (d.w as f32, d.h as f32) },
+            None => Self {
+                w: (d.w * 0.1).clamp(180.0, 220.0) as f32,
+                h: 32.0,
+                has: false,
+                screen: (d.w as f32, d.h as f32),
+            },
         }
     }
 }
 
 /// The display the island goes on: by mode, falling back to the main display.
-pub fn pick(mode: DisplayMode, all: &[crate::platform::Display], pointer: (f64, f64)) -> Option<&crate::platform::Display> {
+pub fn pick(
+    mode: DisplayMode,
+    all: &[crate::platform::Display],
+    pointer: (f64, f64),
+) -> Option<&crate::platform::Display> {
     let main = all.iter().find(|d| d.main).or(all.first());
     match mode {
-        DisplayMode::Notch => all.iter().find(|d| d.notch.is_some()).or_else(|| all.iter().find(|d| d.builtin)).or(main),
+        DisplayMode::Notch => all
+            .iter()
+            .find(|d| d.notch.is_some())
+            .or_else(|| all.iter().find(|d| d.builtin))
+            .or(main),
         DisplayMode::Main => main,
-        DisplayMode::Pointer => all.iter()
-            .find(|d| pointer.0 >= d.x && pointer.0 < d.x + d.w && pointer.1 >= d.y && pointer.1 <= d.y + d.h)
+        DisplayMode::Pointer => all
+            .iter()
+            .find(|d| {
+                pointer.0 >= d.x
+                    && pointer.0 < d.x + d.w
+                    && pointer.1 >= d.y
+                    && pointer.1 <= d.y + d.h
+            })
             .or(main),
     }
 }
 
 /// What the display watcher needs from the layout, read off the UI thread.
 pub static DISPLAY_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-pub static HIDE_IN_FULL_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub static HIDE_IN_FULL_SCREEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 pub fn display_mode() -> DisplayMode {
     match DISPLAY_MODE.load(std::sync::atomic::Ordering::Relaxed) {
@@ -132,6 +169,8 @@ pub struct Island {
     pub theme: Theme,
     pub images: Option<Images>,
     pub notch: Notch,
+    pub launcher_fullscreen: Option<(f32, f32)>,
+    pub present_launcher: Option<Box<dyn Fn(bool, (f32, f32))>>,
     pub expanded: bool,
     pub selected: Option<String>,
     pub hover: bool,
@@ -205,6 +244,8 @@ impl Island {
             theme,
             images: None,
             notch,
+            launcher_fullscreen: None,
+            present_launcher: None,
             expanded: false,
             selected: None,
             hover: false,
@@ -236,6 +277,9 @@ impl Island {
     }
 
     pub fn canvas_w(&self) -> f32 {
+        if let Some((width, _)) = self.launcher_fullscreen {
+            return width;
+        }
         self.open_w() + 2.0 * (SHADOW_ROOM + MAX_WING)
     }
 
@@ -245,11 +289,26 @@ impl Island {
 
     /// Content width of an open page.
     pub fn page_w(&self) -> f32 {
-        self.open_w() - 32.0
+        if let Some((width, _)) = self.launcher_fullscreen {
+            return width - 48.0;
+        }
+        self.open_w() - 2.0 * self.layout.island.content_padding.clamp(8.0, 40.0)
     }
 
     fn glass(&self) -> bool {
-        self.layout.island.glass && !self.reduce_transparency
+        matches!(self.background_style(), "frosted" | "liquid") && !self.reduce_transparency
+    }
+
+    fn background_style(&self) -> &str {
+        self.layout
+            .island
+            .background_style
+            .as_deref()
+            .unwrap_or(if self.layout.island.glass {
+                "liquid"
+            } else {
+                "faux"
+            })
     }
 
     fn hidden(&self, name: &str) -> bool {
@@ -257,23 +316,40 @@ impl Island {
     }
 
     fn compact_rank(&self, name: &str) -> usize {
-        self.layout.compact.iter().position(|n| n == name).unwrap_or(usize::MAX)
+        self.layout
+            .compact
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or(usize::MAX)
     }
 
     /// The mod that owns the closed island: the first listed in layout.compact with an activity,
     /// then by priority.
     pub fn active(&self) -> Option<&Output> {
         let candidates = self.candidates();
-        self.compact_choice.as_deref().and_then(|c| candidates.iter().copied().find(|o| o.name == c))
+        self.compact_choice
+            .as_deref()
+            .and_then(|c| candidates.iter().copied().find(|o| o.name == c))
             .or_else(|| candidates.first().copied())
     }
 
     /// Mods with something to show closed, best first.
     fn candidates(&self) -> Vec<&Output> {
-        let mut c: Vec<&Output> = self.outputs.values().filter(|o| o.activity.is_some() && !self.hidden(&o.name)).collect();
+        let mut c: Vec<&Output> = self
+            .outputs
+            .values()
+            .filter(|o| o.activity.is_some() && !self.hidden(&o.name))
+            .collect();
         c.sort_by(|a, b| {
-            self.compact_rank(&a.name).cmp(&self.compact_rank(&b.name))
-                .then_with(|| b.activity.as_ref().unwrap().priority.total_cmp(&a.activity.as_ref().unwrap().priority))
+            self.compact_rank(&a.name)
+                .cmp(&self.compact_rank(&b.name))
+                .then_with(|| {
+                    b.activity
+                        .as_ref()
+                        .unwrap()
+                        .priority
+                        .total_cmp(&a.activity.as_ref().unwrap().priority)
+                })
                 .then_with(|| a.name.cmp(&b.name))
         });
         c
@@ -285,8 +361,15 @@ impl Island {
         if names.len() < 2 {
             return false;
         }
-        let at = self.active().and_then(|a| names.iter().position(|n| *n == a.name)).unwrap_or(0);
-        let next = if forward { (at + 1) % names.len() } else { (at + names.len() - 1) % names.len() };
+        let at = self
+            .active()
+            .and_then(|a| names.iter().position(|n| *n == a.name))
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % names.len()
+        } else {
+            (at + names.len() - 1) % names.len()
+        };
         self.compact_choice = Some(names[next].clone());
         self.track_active();
         self.active_dir = if forward { 1.0 } else { -1.0 };
@@ -300,8 +383,15 @@ impl Island {
         if names.len() < 2 {
             return false;
         }
-        let at = self.page().and_then(|p| names.iter().position(|n| *n == p.name)).unwrap_or(0);
-        let next = if forward { (at + 1) % names.len() } else { (at + names.len() - 1) % names.len() };
+        let at = self
+            .page()
+            .and_then(|p| names.iter().position(|n| *n == p.name))
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % names.len()
+        } else {
+            (at + names.len() - 1) % names.len()
+        };
         self.select(&names[next]);
         self.page_dir = if forward { 1.0 } else { -1.0 };
         true
@@ -309,27 +399,54 @@ impl Island {
 
     fn wheel(&mut self, e: WheelEvent, tx: &mut Tx) -> bool {
         let (x, y) = self.body_origin.get();
-        self.scroll(e.dx, e.dy, e.phase, e.momentum, Some((x + e.x, y + e.y)), tx)
+        self.scroll(
+            e.dx,
+            e.dy,
+            e.phase,
+            e.momentum,
+            Some((x + e.x, y + e.y)),
+            tx,
+        )
     }
 
     /// A two-finger swipe step, from Rune (headless) or the panel's event monitor (live); `at`
     /// is the pointer in window points. One that starts mostly vertical over a mod's scroll
     /// viewport scrolls it, momentum included; one that starts mostly sideways over a tab strip
     /// with more tabs than fit scrolls the strip; any other swipes.
-    pub fn scroll(&mut self, dx: f32, dy: f32, phase: rune::GesturePhase, momentum: bool, at: Option<(f32, f32)>, tx: &mut Tx) -> bool {
+    pub fn scroll(
+        &mut self,
+        dx: f32,
+        dy: f32,
+        phase: rune::GesturePhase,
+        momentum: bool,
+        at: Option<(f32, f32)>,
+        tx: &mut Tx,
+    ) -> bool {
         use nook_core::haptics::{HapticConfig, HapticPattern, trigger};
         if self.mod_dragging {
             return true;
         }
         let now = Instant::now();
-        let stale = self.scroll_lock.as_ref().is_none_or(|(_, t)| now.duration_since(*t) >= gesture::IDLE);
+        let stale = self
+            .scroll_lock
+            .as_ref()
+            .is_none_or(|(_, t)| now.duration_since(*t) >= gesture::IDLE);
         if !momentum && (phase == rune::GesturePhase::Began || stale) {
             self.scroll_lock = Some((ScrollLock::Pending, now));
         }
-        if self.scroll_lock.as_ref().is_some_and(|(l, _)| *l == ScrollLock::Pending) && (dx != 0.0 || dy != 0.0) {
+        if self
+            .scroll_lock
+            .as_ref()
+            .is_some_and(|(l, _)| *l == ScrollLock::Pending)
+            && (dx != 0.0 || dy != 0.0)
+        {
             let lock = match at {
-                Some(p) if self.expanded && dy.abs() >= dx.abs() => self.scroller_at(p).map(ScrollLock::Scroller),
-                Some(p) if self.expanded && self.over_tabs(p) && self.tabs_max() > 0.5 => Some(ScrollLock::Tabs),
+                Some(p) if self.expanded && dy.abs() >= dx.abs() => {
+                    self.scroller_at(p).map(ScrollLock::Scroller)
+                }
+                Some(p) if self.expanded && self.over_tabs(p) && self.tabs_max() > 0.5 => {
+                    Some(ScrollLock::Tabs)
+                }
                 _ => None,
             };
             self.scroll_lock = Some((lock.unwrap_or(ScrollLock::Swipe), now));
@@ -355,20 +472,29 @@ impl Island {
         if momentum {
             return true;
         }
-        let action = self.swipe.wheel(dx, dy, phase, self.expanded, Instant::now());
+        let action = self
+            .swipe
+            .wheel(dx, dy, phase, self.expanded, Instant::now());
         tx.wake_after(gesture::IDLE);
         // One tap, when it opens: the stretch and the other swipes stay quiet.
         match action {
             Action::Open => {
                 self.set_expanded(true);
                 if self.layout.island.haptics {
-                    trigger(Some(HapticConfig { pattern: HapticPattern::Alignment }));
+                    trigger(Some(HapticConfig {
+                        pattern: HapticPattern::Alignment,
+                    }));
                 }
             }
+            Action::Close if self.page().is_some_and(|page| page.name == "app-launcher") => {}
             Action::Close => self.set_expanded(false),
             Action::Cycle(forward) => {
                 if self.expanded {
-                    self.cycle_page(forward);
+                    if self.page().is_some_and(|page| page.name == "app-launcher") {
+                        self.cycle_app_launcher(forward);
+                    } else {
+                        self.cycle_page(forward);
+                    }
                 } else {
                     self.cycle_compact(forward);
                 }
@@ -378,25 +504,66 @@ impl Island {
         true
     }
 
+    fn cycle_app_launcher(&self, forward: bool) {
+        let Some(mods) = &self.mods else { return };
+        let (_, mut shared) = mods.store().get("shared");
+        if !shared.is_object() {
+            shared = json!({});
+        }
+        let sequence = shared
+            .get("appLauncherSwipe")
+            .and_then(|event| event.get("sequence"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .saturating_add(1);
+        shared["appLauncherSwipe"] = json!({
+            "sequence": sequence,
+            "direction": if forward { "right" } else { "left" },
+        });
+        mods.publish("shared", shared);
+    }
+
     /// Mods with a page, in layout.expanded order, then by name.
     pub fn pages(&self) -> Vec<&Output> {
-        let rank = |o: &Output| self.layout.expanded.iter().position(|n| *n == o.name).unwrap_or(usize::MAX);
-        let mut pages: Vec<&Output> = self.outputs.values().filter(|o| o.has_expanded && !self.hidden(&o.name) && !o.name.contains("-edited")).collect();
+        let rank = |o: &Output| {
+            self.layout
+                .expanded
+                .iter()
+                .position(|n| *n == o.name)
+                .unwrap_or(usize::MAX)
+        };
+        let mut pages: Vec<&Output> = self
+            .outputs
+            .values()
+            .filter(|o| {
+                o.has_expanded
+                    && !self.hidden(&o.name)
+                    && (!o.name.contains("-edited")
+                        || self.layout.compact.iter().any(|name| name == &o.name))
+            })
+            .collect();
         pages.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name)));
         pages
     }
 
     fn page(&self) -> Option<&Output> {
         let pages = self.pages();
-        self.selected.as_deref().and_then(|s| pages.iter().copied().find(|o| o.name == s))
+        self.selected
+            .as_deref()
+            .and_then(|s| pages.iter().copied().find(|o| o.name == s))
             .or_else(|| self.active().filter(|a| a.has_expanded))
             .or_else(|| pages.first().copied())
     }
 
     /// Selects a page; content slides in from the side it sits on.
     pub fn select(&mut self, name: &str) {
+        if name != "app-launcher" && self.launcher_fullscreen.is_some() {
+            self.set_launcher_fullscreen(None);
+        }
         let pages: Vec<String> = self.pages().iter().map(|o| o.name.clone()).collect();
-        let from = self.page().and_then(|p| pages.iter().position(|n| *n == p.name));
+        let from = self
+            .page()
+            .and_then(|p| pages.iter().position(|n| *n == p.name));
         let to = pages.iter().position(|n| n == name);
         if let (Some(from), Some(to)) = (from, to) {
             self.page_dir = if to >= from { 1.0 } else { -1.0 };
@@ -418,12 +585,19 @@ impl Island {
     }
 
     fn over_tabs(&self, (x, y): (f32, f32)) -> bool {
-        self.tabs_rect.get().is_some_and(|r| x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3])
+        self.tabs_rect
+            .get()
+            .is_some_and(|r| x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3])
     }
 
     /// Scrolls the tab strip just far enough to show the open page's tab clear of the fades.
     fn reveal_tab(&mut self) {
-        let Some(at) = self.page().and_then(|p| self.pages().iter().position(|o| o.name == p.name)) else { return };
+        let Some(at) = self
+            .page()
+            .and_then(|p| self.pages().iter().position(|o| o.name == p.name))
+        else {
+            return;
+        };
         let left = TABS_LEFT + at as f32 * (TAB_W + TAB_GAP);
         let (lo, hi) = (left + TAB_W + TABS_FADE - self.tabs_w(), left - TABS_FADE);
         self.tabs_offset = self.tabs_offset.max(lo).min(hi).clamp(0.0, self.tabs_max());
@@ -433,8 +607,13 @@ impl Island {
     fn track_active(&mut self) {
         let now = self.active().map(|o| o.name.clone());
         if now != self.last_active {
-            let rank = |n: &Option<String>| n.as_deref().map_or(usize::MAX, |n| self.compact_rank(n));
-            self.active_dir = if rank(&now) <= rank(&self.last_active) { -1.0 } else { 1.0 };
+            let rank =
+                |n: &Option<String>| n.as_deref().map_or(usize::MAX, |n| self.compact_rank(n));
+            self.active_dir = if rank(&now) <= rank(&self.last_active) {
+                -1.0
+            } else {
+                1.0
+            };
             self.last_active = now;
         }
     }
@@ -442,9 +621,8 @@ impl Island {
     pub fn apply(&mut self, out: Output, tx: &mut Tx) {
         let notice_id = |o: &Output| o.activity.as_ref()?.notice.as_ref()?.k.clone();
         let name = out.name.clone();
-        let new_notice = notice_id(&out).is_some_and(|id| {
-            self.outputs.get(&name).and_then(notice_id).as_ref() != Some(&id)
-        });
+        let new_notice = notice_id(&out)
+            .is_some_and(|id| self.outputs.get(&name).and_then(notice_id).as_ref() != Some(&id));
         self.outputs.insert(out.name.clone(), out);
         if new_notice && !self.expanded && self.active().is_some_and(|o| o.name == name) {
             let duration = Duration::from_secs(8);
@@ -493,30 +671,57 @@ impl Island {
     /// The look now: the style of the mod that owns what's shown (the closed island's activity,
     /// or the open page) over layout.json's, with the defaults under both.
     pub fn look(&self) -> Look {
-        let owner = if self.expanded { self.page() } else { self.active() };
+        let owner = if self.expanded {
+            self.page()
+        } else {
+            self.active()
+        };
         let base = &self.layout.island.style;
-        let style = owner.and_then(|o| o.style.as_ref()).map_or_else(|| base.clone(), |s| s.over(base));
+        let style = owner
+            .and_then(|o| o.style.as_ref())
+            .map_or_else(|| base.clone(), |s| s.over(base));
         Look::of(&style, &self.theme, self.notch.h)
     }
 
     /// The innermost scroll viewport under `p` that has somewhere to go.
     fn scroller_at(&self, (x, y): (f32, f32)) -> Option<String> {
-        self.scroll_geometry.borrow().iter()
-            .filter(|(_, g)| g.max > 0.5 && x >= g.rect[0] && x <= g.rect[0] + g.rect[2] && y >= g.rect[1] && y <= g.rect[1] + g.rect[3])
+        self.scroll_geometry
+            .borrow()
+            .iter()
+            .filter(|(_, g)| {
+                g.max > 0.5
+                    && x >= g.rect[0]
+                    && x <= g.rect[0] + g.rect[2]
+                    && y >= g.rect[1]
+                    && y <= g.rect[1] + g.rect[3]
+            })
             .min_by(|a, b| (a.1.rect[2] * a.1.rect[3]).total_cmp(&(b.1.rect[2] * b.1.rect[3])))
             .map(|(k, _)| k.clone())
     }
 
     /// Moves viewport `key` by a swipe's `dy` (positive moves the content down).
     fn scroll_by(&mut self, key: &str, dy: f32, tx: &mut Tx) {
-        let Some(g) = self.scroll_geometry.borrow().get(key).copied() else { return };
+        let Some(g) = self.scroll_geometry.borrow().get(key).copied() else {
+            return;
+        };
         let mut offsets = self.scroll_offsets.borrow_mut();
         // A viewport not yet scrolled is where Rune opened it: at the bottom when it sticks there.
-        let now = offsets.get(key).copied().unwrap_or(if g.stick_bottom { f32::INFINITY } else { 0.0 });
+        let now =
+            offsets
+                .get(key)
+                .copied()
+                .unwrap_or(if g.stick_bottom { f32::INFINITY } else { 0.0 });
         let next = (now.min(g.max) - dy).clamp(0.0, g.max);
         // At the bottom of a sticking viewport, content that arrives keeps it there: it reads as
         // "at the end", whatever the end grows to.
-        offsets.insert(key.to_owned(), if g.stick_bottom && next >= g.max - 0.5 { f32::INFINITY } else { next });
+        offsets.insert(
+            key.to_owned(),
+            if g.stick_bottom && next >= g.max - 0.5 {
+                f32::INFINITY
+            } else {
+                next
+            },
+        );
         log::debug!("island: scroll {key} to {next:.0} of {:.0}", g.max);
         tx.scroll_to_instant(key.to_owned(), 0.0, next);
     }
@@ -526,16 +731,33 @@ impl Island {
         let drawn = std::mem::take(&mut *self.scrollers_drawn.borrow_mut());
         let mut geometry = BTreeMap::new();
         for s in &drawn {
-            let (Some(rect), Some([_, content])) = (cx.layout(&s.key), cx.layout_size(&s.content_key())) else { continue };
-            geometry.insert(s.key.clone(), ScrollGeometry { rect, max: (content + s.pad - rect[3]).max(0.0), stick_bottom: s.stick_bottom });
+            let (Some(rect), Some([_, content])) =
+                (cx.layout(&s.key), cx.layout_size(&s.content_key()))
+            else {
+                continue;
+            };
+            geometry.insert(
+                s.key.clone(),
+                ScrollGeometry {
+                    rect,
+                    max: (content + s.pad - rect[3]).max(0.0),
+                    stick_bottom: s.stick_bottom,
+                },
+            );
         }
         // A viewport that went is drawn anew (at its top, or bottom) when it comes back.
-        self.scroll_offsets.borrow_mut().retain(|k, _| drawn.iter().any(|s| s.key == *k));
+        self.scroll_offsets
+            .borrow_mut()
+            .retain(|k, _| drawn.iter().any(|s| s.key == *k));
         *self.scroll_geometry.borrow_mut() = geometry;
         if let Some([x, y, _, _]) = cx.layout("island/body") {
             self.body_origin.set((x, y));
         }
-        self.tabs_rect.set(if self.expanded { cx.layout("topbar/tabs") } else { None });
+        self.tabs_rect.set(if self.expanded {
+            cx.layout("topbar/tabs")
+        } else {
+            None
+        });
     }
 
     /// The island's state for mods (`island()`).
@@ -552,10 +774,31 @@ impl Island {
             "notch": { "width": self.notch.w, "height": self.notch.h, "hasNotch": self.notch.has },
             "screen": { "width": self.notch.screen.0, "height": self.notch.screen.1 },
             "page": { "width": self.page_w() },
+            "launcherFullscreen": self.launcher_fullscreen.is_some(),
         })
     }
 
+    pub fn set_launcher_fullscreen(&mut self, size: Option<(f32, f32)>) {
+        self.launcher_fullscreen = size;
+        self.left_at = None;
+        self.peek_until = None;
+        if size.is_some() {
+            self.select("app-launcher");
+            self.set_expanded(true);
+        } else {
+            self.fields.blur_all(self.mods.as_ref());
+            self.give_keys_back();
+        }
+        if let Some(present) = &self.present_launcher {
+            present(size.is_some(), size.unwrap_or((self.canvas_w(), CANVAS_H)));
+        }
+        self.publish();
+    }
+
     fn set_expanded(&mut self, open: bool) {
+        if !open && self.launcher_fullscreen.is_some() {
+            self.set_launcher_fullscreen(None);
+        }
         if self.expanded != open {
             self.expanded = open;
             if open {
@@ -596,6 +839,10 @@ impl Island {
     /// A field gave up the keyboard (Escape, `blur()`): back to the app it came from, and the
     /// island closes as it would have, had the pointer left while someone typed.
     pub fn field_left(&mut self, tx: &mut Tx) {
+        if self.launcher_fullscreen.is_some() {
+            if let Some(ask) = &self.request_keys { ask(); }
+            return;
+        }
         self.give_keys_back();
         if self.expanded && !self.hover {
             self.left_at = Some(Instant::now());
@@ -613,6 +860,10 @@ impl Island {
     pub fn command(&mut self, from: &str, command: &str, args: &Value, tx: &mut Tx) {
         let arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_owned);
         match command {
+            "island.app-launcher-fullscreen" => {
+                let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                self.set_launcher_fullscreen(enabled.then_some(self.notch.screen));
+            }
             "island.expand" => self.set_expanded(true),
             "island.collapse" => self.set_expanded(false),
             "island.toggle" => self.set_expanded(!self.expanded),
@@ -621,7 +872,11 @@ impl Island {
                 self.set_expanded(true);
             }
             "island.peek" => {
-                let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(3000).clamp(500, 30_000);
+                let ms = args
+                    .get("ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3000)
+                    .clamp(500, 30_000);
                 self.select(&arg("mod").unwrap_or_else(|| from.to_owned()));
                 if !self.expanded || self.peek_until.is_some() {
                     self.peek_until = Some(Instant::now() + Duration::from_millis(ms));
@@ -631,13 +886,21 @@ impl Island {
             }
             "settings.open" => {
                 self.set_expanded(false);
-                if let Some(open) = &self.open_settings { open(); }
+                if let Some(open) = &self.open_settings {
+                    open();
+                }
             }
             "theme.set" => {
                 let dir = crate::home::app_dir();
                 let name = arg("name");
                 if let Some(n) = name.as_deref().filter(|n| !crate::theme::exists(&dir, n)) {
-                    refused(from, &format!("theme.set: no theme named {n:?} (themes: {})", crate::theme::names(&dir).join(", ")));
+                    refused(
+                        from,
+                        &format!(
+                            "theme.set: no theme named {n:?} (themes: {})",
+                            crate::theme::names(&dir).join(", ")
+                        ),
+                    );
                     return;
                 }
                 let colors = args.get("colors").and_then(Value::as_object);
@@ -652,7 +915,8 @@ impl Island {
                 });
             }
             "layout.patch" => {
-                if let Err(e) = crate::home::patch_layout(args.get("patch").unwrap_or(&Value::Null)) {
+                if let Err(e) = crate::home::patch_layout(args.get("patch").unwrap_or(&Value::Null))
+                {
                     refused(from, &e);
                 }
             }
@@ -706,13 +970,30 @@ impl Look {
     fn of(s: &IslandStyle, t: &Theme, notch_h: f32) -> Self {
         Self {
             fill: t.color(s.fill.as_deref().unwrap_or("island")),
-            gradient: s.gradient.as_ref().map(|(top, bottom)| (t.color(top), t.color(bottom))),
-            border: s.border.as_ref().filter(|b| b.width > 0.0).map(|b| (b.width.min(6.0), t.color(&b.color))),
+            gradient: s
+                .gradient
+                .as_ref()
+                .map(|(top, bottom)| (t.color(top), t.color(bottom))),
+            border: s
+                .border
+                .as_ref()
+                .filter(|b| b.width > 0.0)
+                .map(|b| (b.width.min(6.0), t.color(&b.color))),
             // The glow can't reach past the room left for the open island's shadow.
-            glow: s.glow.as_ref().filter(|g| g.radius > 0.0).map(|g| (g.radius.min(SHADOW_ROOM), t.color(&g.color))),
+            glow: s
+                .glow
+                .as_ref()
+                .filter(|g| g.radius > 0.0)
+                .map(|g| (g.radius.min(SHADOW_ROOM), t.color(&g.color))),
             // A closed island's corners can't be rounder than it is tall.
-            compact_radius: s.compact_radius.unwrap_or(COMPACT_RADIUS).clamp(0.0, notch_h),
-            expanded_radius: s.expanded_radius.unwrap_or(EXPANDED_RADIUS).clamp(0.0, MAX_EXPANDED_RADIUS),
+            compact_radius: s
+                .compact_radius
+                .unwrap_or(COMPACT_RADIUS)
+                .clamp(0.0, notch_h),
+            expanded_radius: s
+                .expanded_radius
+                .unwrap_or(EXPANDED_RADIUS)
+                .clamp(0.0, MAX_EXPANDED_RADIUS),
             wings: s.wings.unwrap_or(WING).clamp(0.0, MAX_WING),
             shadow: s.shadow.unwrap_or(true),
         }
@@ -760,7 +1041,16 @@ mod display_tests {
     use crate::platform::Display;
 
     fn d(id: u32, x: f64, notch: bool, main: bool) -> Display {
-        Display { id, x, y: 0.0, w: 1800.0, h: 1169.0, notch: notch.then_some((220.0, 38.0)), builtin: notch, main }
+        Display {
+            id,
+            x,
+            y: 0.0,
+            w: 1800.0,
+            h: 1169.0,
+            notch: notch.then_some((220.0, 38.0)),
+            builtin: notch,
+            main,
+        }
     }
 
     #[test]
@@ -769,8 +1059,16 @@ mod display_tests {
         let all = [d(1, 0.0, true, false), d(2, 1800.0, false, true)];
         assert_eq!(pick(DisplayMode::Notch, &all, (0.0, 0.0)).unwrap().id, 1);
         assert_eq!(pick(DisplayMode::Main, &all, (0.0, 0.0)).unwrap().id, 2);
-        assert_eq!(pick(DisplayMode::Pointer, &all, (2500.0, 600.0)).unwrap().id, 2);
-        assert_eq!(pick(DisplayMode::Pointer, &all, (100.0, 600.0)).unwrap().id, 1);
+        assert_eq!(
+            pick(DisplayMode::Pointer, &all, (2500.0, 600.0))
+                .unwrap()
+                .id,
+            2
+        );
+        assert_eq!(
+            pick(DisplayMode::Pointer, &all, (100.0, 600.0)).unwrap().id,
+            1
+        );
         // No notch anywhere (an iMac, a closed MacBook): the main display.
         let flat = [d(3, 0.0, false, true)];
         assert_eq!(pick(DisplayMode::Notch, &flat, (0.0, 0.0)).unwrap().id, 3);
@@ -780,7 +1078,10 @@ mod display_tests {
 
 pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
     let now = Instant::now();
-    if s.compact_notice.as_ref().is_some_and(|(_, until)| now >= *until) {
+    if s.compact_notice
+        .as_ref()
+        .is_some_and(|(_, until)| now >= *until)
+    {
         s.compact_notice = None;
         return true;
     }
@@ -791,14 +1092,20 @@ pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
         return true;
     }
     let opts = &s.layout.island;
-    if !s.expanded && s.hover && opts.hover == HoverMode::Open && now.duration_since(s.hover_at) >= Duration::from_millis(opts.hover_delay_ms) {
+    if !s.expanded
+        && s.hover
+        && opts.hover == HoverMode::Open
+        && now.duration_since(s.hover_at) >= Duration::from_millis(opts.hover_delay_ms)
+    {
         s.set_expanded(true);
         return true;
     }
     // Typing and an in-progress drag hold the island open, wherever the pointer went.
-    if s.expanded && !s.hover && !s.fields.typing() && !s.mod_dragging {
+    if s.expanded && s.launcher_fullscreen.is_none() && !s.hover && !s.fields.typing() && !s.mod_dragging {
         let peeking = s.peek_until.is_some_and(|t| now < t);
-        let left = s.left_at.is_some_and(|t| now.duration_since(t) >= Duration::from_millis(opts.collapse_delay_ms));
+        let left = s.left_at.is_some_and(|t| {
+            now.duration_since(t) >= Duration::from_millis(opts.collapse_delay_ms)
+        });
         if !peeking && (left || s.peek_until.is_some()) {
             s.set_expanded(false);
             return true;
@@ -809,6 +1116,22 @@ pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
 
 /// The panel gained or lost the keyboard. Lost (a click in another app), a field that had it
 /// lets go, so the island can close.
+pub fn key(s: &mut Island, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    if s.launcher_fullscreen.is_none() { return false; }
+    match event.key {
+        rune::Key::Escape => {
+            tx.blur();
+            s.set_expanded(false);
+            true
+        }
+        rune::Key::Left | rune::Key::Right if !s.fields.typing() => {
+            s.cycle_app_launcher(event.key == rune::Key::Left);
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn window_focus(s: &mut Island, focused: bool, tx: &mut Tx) {
     if !focused && s.fields.typing() {
         tx.blur();
@@ -853,45 +1176,94 @@ fn wing(left: bool, color: Color, size: f32) -> El {
     let center = if left { [0.0, 1.0] } else { [1.0, 1.0] };
     // Half a point of feather on the curve.
     let edge = 1.0 - 0.5 / size;
-    el().size(size, size).radial_gradient(center, size, [(0.0, clear), (edge, clear), (1.0, color)])
+    el().size(size, size)
+        .radial_gradient(center, size, [(0.0, clear), (edge, clear), (1.0, color)])
 }
 
 pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
+    if let Some((width, height)) = s.launcher_fullscreen {
+        s.scrollers_drawn.borrow_mut().clear();
+        let content = s.page().and_then(|page| page.expanded.as_ref().map(|node| render::node(node, &rcx(s, page)))).unwrap_or_else(col);
+        let mut backdrop = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).fill(Color::BLACK);
+        if let Some(image) = s.images.as_ref().and_then(|images| images.get("nook:wallpaper", std::path::Path::new(""), width)) {
+            backdrop = backdrop.pixels_fit(image.pixels(), rune::SurfaceFit::Fill);
+        }
+        return col()
+            .key("app-launcher/fullscreen")
+            .on_key(key)
+            .size(width, height)
+            .hit()
+            .on_press(|s: &mut Island| s.set_expanded(false))
+            .child(backdrop)
+            .child(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).fill(Color::BLACK.alpha(0.08)))
+            .child(content);
+    }
     let look = s.look();
     let glass = s.expanded && s.glass();
+    let background_style = s.background_style();
     // Without a camera housing there's nothing to blend into: a resting island would be a
     // black block on the menu bar. It stays clear, a hover target, until it has something.
-    let ghost = !s.notch.has && !s.expanded && !s.hover && s.swipe.pull == 0.0 && s.active().is_none();
+    let ghost =
+        !s.notch.has && !s.expanded && !s.hover && s.swipe.pull == 0.0 && s.active().is_none();
     let fade = |c: Color| if ghost { c.alpha(0.0) } else { c };
-    let black = fade(look.fill);
+    let black = fade(if background_style == "black" {
+        Color::BLACK
+    } else {
+        look.fill
+    });
     let top = fade(look.top());
     s.scrollers_drawn.borrow_mut().clear();
-    let body = if s.expanded { expanded(s, &look) } else { compact(s, &look) };
+    let body = if s.expanded {
+        expanded(s, &look)
+    } else {
+        compact(s, &look)
+    };
     s.measure_scrollers(cx);
-    let radius = if s.expanded { look.expanded_radius } else { look.compact_radius };
+    let radius = if s.expanded {
+        look.expanded_radius
+    } else {
+        look.compact_radius
+    };
     // The island is a row: wing, body, wing. The left wing rides the row's left edge (where
     // children ride) and the right one its trailing edge, so both stay attached through every
     // spring; the body moves on the same spring as the row. Beside the island as siblings, or
     // pinned outside it, they'd move on their own and come apart.
-    let mut body = body.key("island/body").motion(MORPH).corners([0.0, 0.0, radius, radius]);
+    let mut body = body
+        .key("island/body")
+        .motion(MORPH)
+        .corners([0.0, 0.0, radius, radius]);
     if s.glass() {
         // The glass is the body's own: its native view follows the body's drawn rect through
         // the morph, under the veil (a separate sheet trailed it on a spring of its own).
         let height = cx.layout_size("island/body").map_or(200.0, |[_, h]| h);
-        body = body.fill(black.alpha(0.0)).linear_gradient(std::f32::consts::PI, veil(s, height, black));
+        let veil_color = if background_style == "frosted" && s.expanded {
+            black.alpha(0.42)
+        } else {
+            black
+        };
+        body = body
+            .fill(black.alpha(0.0))
+            .linear_gradient(std::f32::consts::PI, veil(s, height, veil_color));
         if glass {
             body = body.system_material(SystemMaterial::Glass);
             if look.border.is_none() {
-                body = body.border_gradient(1.0, Color::WHITE.alpha(0.0), Color::WHITE.alpha(RIM_ALPHA));
+                body = body.border_gradient(
+                    1.0,
+                    Color::WHITE.alpha(0.0),
+                    Color::WHITE.alpha(RIM_ALPHA),
+                );
             }
         }
     } else {
         body = body.fill(black);
-        if let Some((t, b)) = look.gradient {
+        if background_style != "black"
+            && let Some((t, b)) = look.gradient
+        {
             body = body.gradient(fade(t), fade(b));
         }
     }
-    let body = body.hit()
+    let body = body
+        .hit()
         .on_wheel(|s: &mut Island, e, tx| s.wheel(e, tx))
         .on_hover_change(|s: &mut Island, entered, tx| s.hovered(entered, tx))
         .on_press(|s: &mut Island| {
@@ -902,25 +1274,54 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
         .on_secondary_press(|s: &mut Island, press, tx: &mut Tx| s.menu((press.x, press.y), tx));
     // The body clips to its own shape, which would clip its outer shadows too: they go on a
     // clear sheet behind it. Clear, so the glass still shows what's behind the island.
-    let mut shade = el().key("island/shade").motion(MORPH).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .corners([0.0, 0.0, radius, radius]).fill(Color::BLACK.alpha(0.0));
+    let mut shade = el()
+        .key("island/shade")
+        .motion(MORPH)
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .corners([0.0, 0.0, radius, radius])
+        .fill(Color::BLACK.alpha(0.0));
     if let Some((r, c)) = look.glow.filter(|_| !ghost) {
         shade = shade.shadow(0.0, r, c);
     }
     if s.expanded && look.shadow {
-        shade = shade.shadow(14.0, 40.0, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.45 });
+        shade = shade.shadow(
+            14.0,
+            40.0,
+            Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.45,
+            },
+        );
     }
-    let mut frame = col().key("island/frame").motion(MORPH).child(shade).child(body);
+    let mut frame = col()
+        .key("island/frame")
+        .motion(MORPH)
+        .child(shade)
+        .child(body);
     if let Some((w, c)) = look.border.filter(|_| !ghost) {
         // Over the body, and starting above the screen's edge: the flat top has no line, so
         // the outline runs down the sides and round the bottom.
-        frame = frame.child(el().key("island/border").motion(MORPH).pin(Some(0.0), Some(-w), Some(0.0), Some(0.0))
-            .corners([0.0, 0.0, radius, radius]).border(w, c));
+        frame = frame.child(
+            el().key("island/border")
+                .motion(MORPH)
+                .pin(Some(0.0), Some(-w), Some(0.0), Some(0.0))
+                .corners([0.0, 0.0, radius, radius])
+                .border(w, c),
+        );
     }
-    let island = row().key("island").motion(MORPH).items_start()
+    let island = row()
+        .key("island")
+        .motion(MORPH)
+        .items_start()
         .child(wing(true, top, look.wings).key("wing/left"))
         .child(frame)
-        .child(wing(false, top, look.wings).key("wing/right").ride_trailing());
+        .child(
+            wing(false, top, look.wings)
+                .key("wing/right")
+                .ride_trailing(),
+        );
     col().w_full().h_full().items_center().child(island)
 }
 
@@ -932,7 +1333,11 @@ fn veil(s: &Island, height: f32, black: Color) -> [(f32, Color); 3] {
         return [(0.0, black), (0.5, black), (1.0, black)];
     }
     let band = VEIL_BAND * (s.layout.island.glass_tint.clamp(0.0, 1.0) / 0.5);
-    let hold = if height > 1.0 { (band / height).clamp(0.0, VEIL_HOLD_CAP) } else { VEIL_HOLD_CAP };
+    let hold = if height > 1.0 {
+        (band / height).clamp(0.0, VEIL_HOLD_CAP)
+    } else {
+        VEIL_HOLD_CAP
+    };
     [(0.0, black), (hold, black), (1.0, black.alpha(0.0))]
 }
 
@@ -941,20 +1346,38 @@ fn compact(s: &Island, look: &Look) -> El {
     let active = s.active();
     let activity = active.and_then(|o| o.activity.as_ref());
     let hovered = s.hover && s.layout.island.hover == HoverMode::Peek;
-    let notice = s.compact_notice.as_ref().is_some_and(|(name, _)| active.is_some_and(|o| o.name == *name));
+    let notice = s
+        .compact_notice
+        .as_ref()
+        .is_some_and(|(name, _)| active.is_some_and(|o| o.name == *name));
     let peek = hovered || notice;
-    let base_side = activity.map_or(0.0, |a| a.width.unwrap_or(n.h + 10.0).clamp(n.h * 0.8, 160.0));
+    let base_side = activity.map_or(0.0, |a| {
+        a.width.unwrap_or(n.h + 10.0).clamp(n.h * 0.8, 160.0)
+    });
     let side = base_side + if peek { PEEK_EXTRA / 2.0 } else { 0.0 } + s.swipe.pull_width() / 2.0;
     let detail = activity.and_then(|a| {
-        if hovered { a.detail.as_ref() } else if notice { a.notice.as_ref() } else { None }
+        if hovered {
+            a.detail.as_ref()
+        } else if notice {
+            a.notice.as_ref()
+        } else {
+            None
+        }
     });
-    let chin = if !peek { 0.0 } else if let Some(detail) = detail {
+    let chin = if !peek {
+        0.0
+    } else if let Some(detail) = detail {
         match detail.s.h {
             Some(nook_mods::node::Len::Pt(height)) => (height + 4.0).clamp(PEEK_DETAIL_CHIN, 120.0),
             _ => PEEK_DETAIL_CHIN,
         }
-    } else { PEEK_CHIN };
-    let mut island = col().size(n.w + 2.0 * side, n.h + chin + s.swipe.pull).corners([0.0, 0.0, look.compact_radius, look.compact_radius]).clip_rounded(0.0);
+    } else {
+        PEEK_CHIN
+    };
+    let mut island = col()
+        .size(n.w + 2.0 * side, n.h + chin + s.swipe.pull)
+        .corners([0.0, 0.0, look.compact_radius, look.compact_radius])
+        .clip_rounded(0.0);
     let (Some(active), Some(activity)) = (active, activity) else {
         // Idle: exactly the camera housing, so it disappears into it (until hovered).
         return island;
@@ -962,24 +1385,42 @@ fn compact(s: &Island, look: &Look) -> El {
     let r = rcx(s, active);
     let swap_in = swap(SLIDE_X * s.active_dir, 0.0);
     let cell = |content: Option<&nook_mods::Node>, key: &str, end: bool| {
-        let c = row().key(format!("compact/{key}/{}", active.name)).w(side).h(n.h).items_center()
-            .pl(if end { 4.0 } else { 12.0 }).pr(if end { 12.0 } else { 4.0 })
+        let c = row()
+            .key(format!("compact/{key}/{}", active.name))
+            .w(side)
+            .h(n.h)
+            .items_center()
+            .pl(if end { 4.0 } else { 12.0 })
+            .pr(if end { 12.0 } else { 4.0 })
             .transition(swap_in);
-        let c = if end { c.justify_end() } else { c.justify_start() };
+        let c = if end {
+            c.justify_end()
+        } else {
+            c.justify_start()
+        };
         match content {
             Some(node) => c.child(render::node(node, &r)),
             None => c,
         }
     };
     island = island.child(
-        row().h(n.h).w_full()
+        row()
+            .h(n.h)
+            .w_full()
             .child(cell(activity.leading.as_ref(), "leading", false))
             .child(el().w(n.w).h_full())
             .child(cell(activity.trailing.as_ref(), "trailing", true)),
     );
     if let Some(d) = detail {
         island = island.child(
-            row().key(format!("compact/detail/{}", active.name)).w_full().h(chin).px(16.0).pb(4.0).justify_center().items_center()
+            row()
+                .key(format!("compact/detail/{}", active.name))
+                .w_full()
+                .h(chin)
+                .px(16.0)
+                .pb(4.0)
+                .justify_center()
+                .items_center()
                 .transition(swap(0.0, -4.0))
                 .child(render::node(d, &r)),
         );
@@ -995,9 +1436,18 @@ fn tab(s: &Island, o: &Output, selected: bool) -> El {
         None if crate::icons::is_picture(i) => o.dir.join(i).is_file(),
         None => crate::icons::get(i, &o.dir).is_some(),
     };
-    let chosen = o.icon.as_deref().filter(drawable).or(o.manifest_icon.as_deref().filter(drawable));
+    let chosen = o
+        .icon
+        .as_deref()
+        .filter(drawable)
+        .or(o.manifest_icon.as_deref().filter(drawable));
     let glyph = chosen.and_then(|i| crate::icons::get(i, &o.dir));
-    let mut t = row().key(format!("tab/{}", o.name)).size(TAB_W, 24.0).radius(7.0).items_center().justify_center()
+    let mut t = row()
+        .key(format!("tab/{}", o.name))
+        .size(TAB_W, 24.0)
+        .radius(7.0)
+        .items_center()
+        .justify_center()
         .hover(s.theme.color("raised"))
         .on_press(move |s: &mut Island| s.select(&name));
     if selected {
@@ -1005,14 +1455,37 @@ fn tab(s: &Island, o: &Output, selected: bool) -> El {
     }
     let color = s.theme.color(if selected { "fg" } else { "muted" });
     // "app:<bundle id>" is that app's own icon, in colour; so is a mod's own picture.
-    let app = chosen.filter(|i| i.starts_with("app:") || crate::icons::is_picture(i)).and_then(|i| s.images.as_ref()?.get(i, &o.dir, 16.0));
-    t = match (app, glyph) {
-        (Some(img), _) => t.child(el().size(16.0, 16.0).pixels_fit(img.pixels(), rune::SurfaceFit::Fit).opacity(if selected { 1.0 } else { 0.7 })),
-        (None, Some(g)) => t.child(icon(g, 15.0).color(color)),
-        (None, None) => t.child(text(o.title.chars().next().unwrap_or('?').to_string()).font(TextStyle::new(12.0, 600.0)).color(color)),
-    };
+    let app = chosen
+        .filter(|i| i.starts_with("app:") || crate::icons::is_picture(i))
+        .and_then(|i| s.images.as_ref()?.get(i, &o.dir, 16.0));
+    if o.name.starts_with("dashboard") {
+        t = t.child(
+            text(o.title.clone())
+                .font(TextStyle::new(11.0, 600.0))
+                .color(color),
+        );
+    } else {
+        t = match (app, glyph) {
+            (Some(img), _) => t.child(
+                el().size(16.0, 16.0)
+                    .pixels_fit(img.pixels(), rune::SurfaceFit::Fit)
+                    .opacity(if selected { 1.0 } else { 0.7 }),
+            ),
+            (None, Some(g)) => t.child(icon(g, 15.0).color(color)),
+            (None, None) => t.child(
+                text(o.title.chars().next().unwrap_or('?').to_string())
+                    .font(TextStyle::new(12.0, 600.0))
+                    .color(color),
+            ),
+        };
+    }
     if o.error.is_some() {
-        t = t.child(el().size(5.0, 5.0).radius(3.0).fill(s.theme.color("red")).pin(None, Some(2.0), Some(2.0), None));
+        t = t.child(
+            el().size(5.0, 5.0)
+                .radius(3.0)
+                .fill(s.theme.color("red"))
+                .pin(None, Some(2.0), Some(2.0), None),
+        );
     }
     t
 }
@@ -1020,7 +1493,12 @@ fn tab(s: &Island, o: &Output, selected: bool) -> El {
 /// The gear at the top bar's end: Settings, one click from the open island.
 fn settings_button(s: &Island) -> El {
     let gear = crate::icons::get("settings", std::path::Path::new("/"));
-    let mut b = row().key("topbar/settings").size(28.0, 24.0).radius(7.0).items_center().justify_center()
+    let mut b = row()
+        .key("topbar/settings")
+        .size(28.0, 24.0)
+        .radius(7.0)
+        .items_center()
+        .justify_center()
         .hover(s.theme.color("raised"))
         .cursor(rune::Cursor::Pointer)
         .on_press(|s: &mut Island| {
@@ -1044,24 +1522,57 @@ fn expanded(s: &Island, look: &Look) -> El {
     // More tabs than fit beside the camera slide under a clip; an edge fades while tabs hide
     // past it. A page's own tabs list may have shrunk since the strip was scrolled.
     let (offset, max) = (s.tabs_offset.min(s.tabs_max()), s.tabs_max());
-    let tabs = pages.iter().fold(row().key("topbar/tabs/row").gap(TAB_GAP).pl(TABS_LEFT).pr(TABS_RIGHT).offset(-offset, 0.0), |r, o| {
-        r.child(tab(s, o, page.is_some_and(|p| p.name == o.name)))
-    });
+    let tabs = pages.iter().fold(
+        row()
+            .key("topbar/tabs/row")
+            .gap(TAB_GAP)
+            .pl(TABS_LEFT)
+            .pr(TABS_RIGHT)
+            .offset(-offset, 0.0),
+        |r, o| r.child(tab(s, o, page.is_some_and(|p| p.name == o.name))),
+    );
     let fade = |hidden: bool| if hidden { TABS_FADE } else { 0.0 };
-    let strip = row().key("topbar/tabs").w(shoulder).h_full().items_center()
+    let strip = row()
+        .key("topbar/tabs")
+        .w(shoulder)
+        .h_full()
+        .items_center()
         .clip_fade(fade(offset > 0.5), 0.0, fade(offset < max - 0.5), 0.0)
         .child(tabs);
     let title = page.map(|p| p.title.clone()).unwrap_or_default();
     // The tab bar sits still while pages swap under it; it arrives with the opening island.
-    let badge = page.filter(|p| p.name == "dashboard")
-        .and_then(|p| p.activity.as_ref()?.trailing.as_ref().map(|node| render::node(node, &rcx(s, p))));
-    let mut controls = row().w(shoulder).h_full().items_center().justify_end().pr(12.0).gap(5.0);
-    if let Some(badge) = badge { controls = controls.child(badge); }
-    if !page.is_some_and(|p| p.name == "dashboard") {
-        controls = controls.child(text(title).font(TextStyle::new(12.0, 600.0)).color(s.theme.color("muted")).truncate().shrink());
+    let badge = page.filter(|p| p.name == "dashboard").and_then(|p| {
+        p.activity
+            .as_ref()?
+            .trailing
+            .as_ref()
+            .map(|node| render::node(node, &rcx(s, p)))
+    });
+    let mut controls = row()
+        .w(shoulder)
+        .h_full()
+        .items_center()
+        .justify_end()
+        .pr(12.0)
+        .gap(5.0);
+    if let Some(badge) = badge {
+        controls = controls.child(badge);
+    }
+    if !page.is_some_and(|p| p.name.starts_with("dashboard") || p.name == "app-launcher") {
+        controls = controls.child(
+            text(title)
+                .font(TextStyle::new(12.0, 600.0))
+                .color(s.theme.color("muted"))
+                .truncate()
+                .shrink(),
+        );
     }
     controls = controls.child(settings_button(s));
-    let top = row().key("topbar").h(n.h).w_full().transition(swap(0.0, -SLIDE_Y))
+    let top = row()
+        .key("topbar")
+        .h(n.h)
+        .w_full()
+        .transition(swap(0.0, -SLIDE_Y))
         .child(strip)
         .child(el().w(n.w).h_full())
         .child(controls);
@@ -1071,7 +1582,11 @@ fn expanded(s: &Island, look: &Look) -> El {
                 Some(node) => render::node(node, &rcx(s, p)),
                 None => col(),
             };
-            let mut body = col().key(format!("page/{}", p.name)).w_full().transition(swap(SLIDE_X * s.page_dir, 0.0)).child(content);
+            let mut body = col()
+                .key(format!("page/{}", p.name))
+                .w_full()
+                .transition(swap(SLIDE_X * s.page_dir, 0.0))
+                .child(content);
             if let Some(e) = &p.error {
                 body = body.child(problem(s, &p.name, e));
             }
@@ -1079,28 +1594,76 @@ fn expanded(s: &Island, look: &Look) -> El {
         }
         None => empty(s),
     };
-    let bottom_padding = if page.is_some_and(|p| p.name == "dashboard") { 6.0 } else { 16.0 };
-    let mut island = col().w(w).corners([0.0, 0.0, look.expanded_radius, look.expanded_radius]).pb(bottom_padding)
+    let bottom_padding = if page.is_some_and(|p| p.name == "dashboard") {
+        6.0
+    } else {
+        16.0
+    };
+    let mut island = col()
+        .w(w)
+        .corners([0.0, 0.0, look.expanded_radius, look.expanded_radius])
+        .pb(bottom_padding)
         .clip_rounded(look.expanded_radius);
-    island = island.child(top).child(col().w_full().px(16.0).pt(6.0).child(body));
+    island = island
+        .child(top)
+        .child(col().w_full().px(16.0).pt(6.0).child(body));
     for note in &s.notes {
-        island = island.child(text(note).font(TextStyle::new(11.0, 400.0)).color(s.theme.color("muted")).px(18.0).pt(8.0));
+        island = island.child(
+            text(note)
+                .font(TextStyle::new(11.0, 400.0))
+                .color(s.theme.color("muted"))
+                .px(18.0)
+                .pt(8.0),
+        );
     }
     island
 }
 
 fn problem(s: &Island, name: &str, error: &str) -> El {
     let first = error.lines().next().unwrap_or(error);
-    col().key(format!("problem/{name}")).w_full().mt(8.0).padding(10.0).radius(12.0).fill(s.theme.color("red").alpha(0.14)).gap(3.0)
-        .child(text(format!("{name} has a problem")).font(TextStyle::new(12.0, 600.0)).color(s.theme.color("red")))
-        .child(text(first).font(TextStyle::new(11.0, 400.0).mono()).color(s.theme.color("fg")).max_lines(3))
-        .child(text(format!("Details: ~/.config/opennook/mods/{name}.error")).font(TextStyle::new(10.5, 400.0)).color(s.theme.color("muted")))
+    col()
+        .key(format!("problem/{name}"))
+        .w_full()
+        .mt(8.0)
+        .padding(10.0)
+        .radius(12.0)
+        .fill(s.theme.color("red").alpha(0.14))
+        .gap(3.0)
+        .child(
+            text(format!("{name} has a problem"))
+                .font(TextStyle::new(12.0, 600.0))
+                .color(s.theme.color("red")),
+        )
+        .child(
+            text(first)
+                .font(TextStyle::new(11.0, 400.0).mono())
+                .color(s.theme.color("fg"))
+                .max_lines(3),
+        )
+        .child(
+            text(format!("Details: ~/.config/opennook/mods/{name}.error"))
+                .font(TextStyle::new(10.5, 400.0))
+                .color(s.theme.color("muted")),
+        )
 }
 
 fn empty(s: &Island) -> El {
-    col().key("empty").w_full().py(18.0).gap(6.0).items_center()
-        .child(text("No mods yet").font(TextStyle::new(14.0, 600.0)).color(s.theme.color("fg")))
-        .child(text("Ask your agent to write one: ~/.config/opennook/AGENTS.md").font(TextStyle::new(12.0, 400.0)).color(s.theme.color("muted")))
+    col()
+        .key("empty")
+        .w_full()
+        .py(18.0)
+        .gap(6.0)
+        .items_center()
+        .child(
+            text("No mods yet")
+                .font(TextStyle::new(14.0, 600.0))
+                .color(s.theme.color("fg")),
+        )
+        .child(
+            text("Ask your agent to write one: ~/.config/opennook/AGENTS.md")
+                .font(TextStyle::new(12.0, 400.0))
+                .color(s.theme.color("muted")),
+        )
         .child(spacer())
 }
 
@@ -1111,13 +1674,29 @@ mod scroll_tests {
 
     /// The open island on a page whose list of 20 rows scrolls in 200 points.
     fn island_with_list(stick_bottom: bool) -> Runtime<Island> {
-        let rows: Vec<Value> = (0..20).map(|i| json!({ "t": "box", "k": format!("r{i}"), "s": { "dir": "row", "h": 30.0 } })).collect();
+        let rows: Vec<Value> = (0..20)
+            .map(|i| json!({ "t": "box", "k": format!("r{i}"), "s": { "dir": "row", "h": 30.0 } }))
+            .collect();
         let page = json!({ "t": "box", "s": { "dir": "col" }, "c": [
             { "t": "box", "k": "list", "s": { "dir": "col", "gap": 4.0, "max_h": 200.0, "scroll": true, "stick_bottom": stick_bottom }, "c": rows },
         ] });
-        let notch = Notch { w: 200.0, h: 32.0, has: true, screen: (1512.0, 982.0) };
+        let notch = Notch {
+            w: 200.0,
+            h: 32.0,
+            has: true,
+            screen: (1512.0, 982.0),
+        };
         let mut island = Island::new(notch, Layout::default());
-        island.outputs.insert("t".into(), Output { name: "t".into(), title: "t".into(), has_expanded: true, expanded: Some(serde_json::from_value(page).unwrap()), ..Default::default() });
+        island.outputs.insert(
+            "t".into(),
+            Output {
+                name: "t".into(),
+                title: "t".into(),
+                has_expanded: true,
+                expanded: Some(serde_json::from_value(page).unwrap()),
+                ..Default::default()
+            },
+        );
         island.expanded = true;
         island.select("t");
         let size = (island.canvas_w(), CANVAS_H);
@@ -1148,11 +1727,22 @@ mod scroll_tests {
         let at = rt.find("m/t/list").expect("list drawn");
         let top = row_y(&rt, "m/t/r0");
         swipe(&mut rt, at, 0.0, -50.0);
-        assert!((top - row_y(&rt, "m/t/r0") - 100.0).abs() < 1.0, "scrolled {}", top - row_y(&rt, "m/t/r0"));
+        assert!(
+            (top - row_y(&rt, "m/t/r0") - 100.0).abs() < 1.0,
+            "scrolled {}",
+            top - row_y(&rt, "m/t/r0")
+        );
         // 20 rows of 30 with 4 between: 676 points, 476 past the viewport, and no further.
         swipe(&mut rt, at, 0.0, -1000.0);
-        assert!((top - row_y(&rt, "m/t/r0") - 476.0).abs() < 1.0, "scrolled {}", top - row_y(&rt, "m/t/r0"));
-        assert!(rt.state.expanded, "a swipe up over the list doesn't close the island");
+        assert!(
+            (top - row_y(&rt, "m/t/r0") - 476.0).abs() < 1.0,
+            "scrolled {}",
+            top - row_y(&rt, "m/t/r0")
+        );
+        assert!(
+            rt.state.expanded,
+            "a swipe up over the list doesn't close the island"
+        );
     }
 
     #[test]
@@ -1164,14 +1754,100 @@ mod scroll_tests {
         assert_eq!(row_y(&rt, "m/t/r0"), top);
     }
 
+    #[test]
+    fn an_up_swipe_on_app_launcher_does_not_close_open_nook() {
+        let notch = Notch {
+            w: 200.0,
+            h: 32.0,
+            has: true,
+            screen: (1512.0, 982.0),
+        };
+        let mut island = Island::new(notch, Layout::default());
+        for name in ["app-launcher", "dashboard"] {
+            island.outputs.insert(
+                name.into(),
+                Output {
+                    name: name.into(),
+                    title: name.into(),
+                    has_expanded: true,
+                    expanded: Some(
+                        serde_json::from_value(json!({ "t": "box", "s": { "dir": "col", "h": 40.0 } }))
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+            );
+        }
+        island.expanded = true;
+        island.select("app-launcher");
+        let size = (island.canvas_w(), CANVAS_H);
+        let mut rt = Runtime::new(island, view, size, Env::default());
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let at = rt.find("island/body").expect("body drawn");
+        rt.update(|s, tx| {
+            s.scroll(0.0, -35.0, GesturePhase::Began, false, Some(at), tx);
+        });
+        assert!(rt.state.expanded, "an up swipe on the launcher keeps it open");
+        assert_eq!(rt.state.page().unwrap().name, "app-launcher");
+    }
+
+    #[test]
+    fn launcher_fullscreen_restores_native_bounds_from_every_exit() {
+        use std::rc::Rc;
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let mut rt = island_with_pages(1);
+        let normal = (rt.state.canvas_w(), CANVAS_H);
+        let observed = changes.clone();
+        rt.state.present_launcher = Some(Box::new(move |full, size| observed.borrow_mut().push((full, size))));
+        let screen = rt.state.notch.screen;
+        for exit in ["escape", "background", "button", "launch", "tab"] {
+            rt.update(|s, _| s.set_launcher_fullscreen(Some(screen)));
+            rt.set_viewport(screen, 1.0);
+            for _ in 0..30 { rt.frame(1.0 / 60.0); }
+            match exit {
+                "escape" => {
+                    rt.on_key = Some(key);
+                    rt.key(rune::KeyEvent { key: rune::Key::Escape, mods: Default::default() });
+                    rt.frame(0.0);
+                }
+                "background" => {
+                    rt.pointer_down(10.0, screen.1 - 10.0);
+                    rt.pointer_up(10.0, screen.1 - 10.0);
+                    rt.frame(0.0);
+                }
+                "button" => rt.update(|s, tx| s.command("app-launcher", "island.app-launcher-fullscreen", &json!({"enabled": false}), tx)),
+                "launch" => rt.update(|s, tx| s.command("app-launcher", "island.collapse", &Value::Null, tx)),
+                _ => rt.update(|s, _| s.select("p00")),
+            }
+            assert!(rt.state.launcher_fullscreen.is_none(), "{exit} left fullscreen active");
+            assert_eq!(changes.borrow().last(), Some(&(false, normal)), "{exit} left native bounds fullscreen");
+        }
+    }
+
     /// The open island with `n` pages, on the first.
     fn island_with_pages(n: usize) -> Runtime<Island> {
-        let notch = Notch { w: 200.0, h: 32.0, has: true, screen: (1512.0, 982.0) };
+        let notch = Notch {
+            w: 200.0,
+            h: 32.0,
+            has: true,
+            screen: (1512.0, 982.0),
+        };
         let mut island = Island::new(notch, Layout::default());
         for i in 0..n {
             let name = format!("p{i:02}");
             let page = json!({ "t": "box", "s": { "dir": "col", "h": 40.0 } });
-            island.outputs.insert(name.clone(), Output { name: name.clone(), title: name, has_expanded: true, expanded: Some(serde_json::from_value(page).unwrap()), ..Default::default() });
+            island.outputs.insert(
+                name.clone(),
+                Output {
+                    name: name.clone(),
+                    title: name,
+                    has_expanded: true,
+                    expanded: Some(serde_json::from_value(page).unwrap()),
+                    ..Default::default()
+                },
+            );
         }
         island.expanded = true;
         island.select("p00");
@@ -1197,11 +1873,19 @@ mod scroll_tests {
         let at = rt.find("topbar/tabs").expect("strip drawn");
         let first = tab_x(&rt, 0);
         swipe(&mut rt, at, -40.0, 2.0);
-        assert!((first - tab_x(&rt, 0) - 80.0).abs() < 1.0, "scrolled {}", first - tab_x(&rt, 0));
+        assert!(
+            (first - tab_x(&rt, 0) - 80.0).abs() < 1.0,
+            "scrolled {}",
+            first - tab_x(&rt, 0)
+        );
         assert_eq!(selected(&rt), "p00", "the strip scrolled; the page stayed");
         // 12 tabs: 14 + 12 × 28 + 11 × 4 + 8 = 402 points in a 180-point strip, so 222 and no further.
         swipe(&mut rt, at, -1000.0, 0.0);
-        assert!((first - tab_x(&rt, 0) - 222.0).abs() < 1.0, "scrolled {}", first - tab_x(&rt, 0));
+        assert!(
+            (first - tab_x(&rt, 0) - 222.0).abs() < 1.0,
+            "scrolled {}",
+            first - tab_x(&rt, 0)
+        );
         swipe(&mut rt, at, 1000.0, 0.0);
         assert!((tab_x(&rt, 0) - first).abs() < 1.0, "back at the start");
     }
@@ -1220,7 +1904,11 @@ mod scroll_tests {
             rt.frame(1.0 / 60.0);
         }
         // At the strip's end: the last tab whole, with no fade over it (nothing hides past it).
-        assert!((tab_x(&rt, 11) + TAB_W + TABS_RIGHT - right).abs() < 0.5, "last tab at {} of {right}", tab_x(&rt, 11));
+        assert!(
+            (tab_x(&rt, 11) + TAB_W + TABS_RIGHT - right).abs() < 0.5,
+            "last tab at {} of {right}",
+            tab_x(&rt, 11)
+        );
         assert_eq!(rt.state.tabs_offset, rt.state.tabs_max());
     }
 
@@ -1229,7 +1917,10 @@ mod scroll_tests {
         let mut rt = island_with_pages(12);
         let strip = rt.state.tabs_rect.get().unwrap();
         let (x, y) = (tab_x(&rt, 8) + TAB_W / 2.0, strip[1] + strip[3] / 2.0);
-        assert!(x > strip[0] + strip[2], "tab 8 lies past the strip, under the camera");
+        assert!(
+            x > strip[0] + strip[2],
+            "tab 8 lies past the strip, under the camera"
+        );
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(1.0 / 60.0);
@@ -1247,7 +1938,11 @@ mod scroll_tests {
         let mut rt = island_with_pages(3);
         let at = rt.find("topbar/tabs").expect("strip drawn");
         swipe(&mut rt, at, 60.0, 0.0);
-        assert_eq!(selected(&rt), "p01", "with nowhere to scroll, a swipe over the tabs changes the page");
+        assert_eq!(
+            selected(&rt),
+            "p01",
+            "with nowhere to scroll, a swipe over the tabs changes the page"
+        );
     }
 
     #[test]
@@ -1256,6 +1951,10 @@ mod scroll_tests {
         let at = rt.find("m/t/list").unwrap();
         let last = row_y(&rt, "m/t/r19");
         swipe(&mut rt, at, 0.0, 40.0);
-        assert!((row_y(&rt, "m/t/r19") - last - 80.0).abs() < 1.0, "moved {}", row_y(&rt, "m/t/r19") - last);
+        assert!(
+            (row_y(&rt, "m/t/r19") - last - 80.0).abs() < 1.0,
+            "moved {}",
+            row_y(&rt, "m/t/r19") - last
+        );
     }
 }

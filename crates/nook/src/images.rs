@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Decoded images kept by source; past this the oldest half goes.
-const MAX_IMAGES: usize = 96;
+const MAX_IMAGES: usize = 512;
 /// Remote pictures: at most this big a download, decoded to at most this many pixels a side.
 const MAX_DOWNLOAD: u64 = 16 << 20;
 const MAX_REMOTE_SIDE: u32 = 1280;
@@ -91,7 +91,23 @@ pub fn preload(urls: &[String]) {
 
 impl Images {
     pub fn new(waker: rune::Waker) -> Self {
-        Self { cache: ImageCache::new(waker.clone()), loaded: Mutex::default(), arrived: Arc::default(), waker }
+        let images = Self { cache: ImageCache::new(waker.clone()), loaded: Mutex::default(), arrived: Arc::default(), waker };
+        if let Some(path) = crate::platform::desktop_wallpaper() {
+            remote_map().lock().unwrap().insert("nook:wallpaper".into(), Remote::Loading);
+            let (arrived, wake) = (images.arrived.clone(), images.waker.clone());
+            std::thread::spawn(move || {
+                let wallpaper = std::fs::read(path).ok().and_then(|bytes| decode(&bytes).ok()).map(|(w, h, rgba)| {
+                    let image = image::RgbaImage::from_raw(w, h, rgba).unwrap();
+                    let small = image::imageops::resize(&image, 960, (h as f32 * 960.0 / w as f32) as u32, image::imageops::FilterType::Triangle);
+                    let blurred = image::imageops::blur(&small, 22.0);
+                    Remote::Ready(blurred.width(), blurred.height(), blurred.into_raw().into())
+                }).unwrap_or(Remote::Failed);
+                remote_map().lock().unwrap().insert("nook:wallpaper".into(), wallpaper);
+                arrived.store(true, Ordering::Relaxed);
+                wake();
+            });
+        }
+        images
     }
 
     /// Whether a remote picture has arrived since the last call.
@@ -143,6 +159,10 @@ impl Images {
 
     fn load(&self, src: &str, dir: &Path, size_pt: f32) -> Option<Image> {
         let scale = 2.0;
+        if src == "nook:wallpaper" { return self.remote(src); }
+        if let Some(path) = src.strip_prefix("app-file:") {
+            return Some(self.cache.app_icon_scaled(path, size_pt, scale));
+        }
         if let Some(id) = src.strip_prefix("nook:art/") {
             return Some(self.cache.load(art(id)?));
         }
@@ -154,7 +174,9 @@ impl Images {
         if let Some(bundle) = src.strip_prefix("app:") {
             // The light variant: the island is black.
             if let Some((w, h, rgba)) = crate::platform::app_icon_light(bundle, (size_pt * scale).ceil().max(16.0) as u32) {
-                return Some(self.cache.rgba(w, h, rgba));
+                if rgba.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+                    return Some(self.cache.rgba(w, h, rgba));
+                }
             }
             let path = crate::platform::app_path(bundle)?;
             return Some(self.cache.app_icon_scaled(path, size_pt, scale));
