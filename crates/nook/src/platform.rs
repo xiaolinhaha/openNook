@@ -62,8 +62,8 @@ pub fn running_apps() -> (Vec<Value>, Option<u64>) {
     (Vec::new(), None)
 }
 
-/// Pointer input Rune doesn't deliver to an overlay panel: it routes only left presses and
-/// movement there. Scrolls and right-clicks on the island's panel come through here.
+/// macOS overlay panels route primary presses through Rune, but not secondary presses. Keep
+/// right-click handling here and consume the native event before opening the menu asynchronously.
 pub enum IslandInput {
     /// Points, positive moving content right and down (the fingers' way with natural scrolling).
     /// `x`, `y`: the pointer, in window points from the panel's top-left.
@@ -82,6 +82,13 @@ pub fn keys_only_on_request(window: u32) {
         let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
         let panel: *mut AnyObject = msg_send![app, windowWithWindowNumber: window as isize];
         if !panel.is_null() {
+            let appearance: *mut AnyObject = msg_send![
+                class!(NSAppearance),
+                appearanceNamed: mac::ns_string("NSAppearanceNameDarkAqua")
+            ];
+            if !appearance.is_null() {
+                let _: () = msg_send![panel, setAppearance: appearance];
+            }
             let _: () = msg_send![panel, setBecomesKeyOnlyIfNeeded: true];
         }
     }

@@ -3,13 +3,15 @@
 
 mod codex_status;
 mod fields;
+mod file_drop;
+mod file_shelf;
 mod gesture;
 mod home;
 mod icons;
 mod images;
+mod island;
 mod map_status;
 mod palette;
-mod island;
 mod platform;
 mod render;
 mod services;
@@ -19,7 +21,10 @@ mod theme;
 
 use island::{CANVAS_H, Island, Notch};
 use nook_mods::{Host, Mods, Output, Store};
-use rune::{App, AppSpec, DisplayTarget, KeyPolicy, OverlayHandle, OverlayInput, OverlayLevel, OverlayOptions, OverlaySpec, RunOptions, WindowSpec, el};
+use rune::{
+    App, AppSpec, DisplayTarget, KeyPolicy, OverlayHandle, OverlayInput, OverlayLevel,
+    OverlayOptions, OverlaySpec, RunOptions, WindowSpec, el,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -57,7 +62,13 @@ fn main() {
         Some("shot") => std::process::exit(shot(&args[1..])),
         Some("paths") => {
             let c = home::config();
-            println!("home    {}\nmods    {}\nlogs    {}\nguide   {}", c.app.display(), c.mods.display(), c.logs.display(), c.app.join("AGENTS.md").display());
+            println!(
+                "home    {}\nmods    {}\nlogs    {}\nguide   {}",
+                c.app.display(),
+                c.mods.display(),
+                c.logs.display(),
+                c.app.join("AGENTS.md").display()
+            );
         }
         Some("-h" | "--help" | "help") => println!("{USAGE}"),
         Some("--skill") => print!("{}", settings::skill()),
@@ -84,7 +95,8 @@ impl Host for OverlayHost {
     }
     fn command(&self, from: &str, command: &str, args: Value) {
         let (from, command) = (from.to_owned(), command.to_owned());
-        self.0.update(move |s, tx| s.command(&from, &command, &args, tx));
+        self.0
+            .update(move |s, tx| s.command(&from, &command, &args, tx));
     }
     fn wants(&self, topic: &str) {
         if matches!(topic, "agents" | "codexStatus") {
@@ -148,15 +160,32 @@ fn run() {
         island.expanded = true;
         store.publish("island", island.state_json());
     }
-    let canvas = island.launcher_fullscreen.unwrap_or((island.canvas_w(), CANVAS_H));
+    let canvas = island
+        .launcher_fullscreen
+        .unwrap_or((island.canvas_w(), CANVAS_H));
     rune::run_windows_with(RunOptions { accessory: true }, move |_| {
-        let mut app = App::new(AppSpec::new("openNook", (1.0, 1.0), || (), |_, _| el())).windowless();
-        let start = island::pick(island::display_mode(), &platform::displays(), platform::pointer())
-            .map_or(DisplayTarget::Primary, |d| DisplayTarget::Native(rune::NativeDisplayId::MacOS(d.id)));
+        let mut app =
+            App::new(AppSpec::new("openNook", (1.0, 1.0), || (), |_, _| el())).windowless();
+        let start = island::pick(
+            island::display_mode(),
+            &platform::displays(),
+            platform::pointer(),
+        )
+        .map_or(DisplayTarget::Primary, |d| {
+            DisplayTarget::Native(rune::NativeDisplayId::MacOS(d.id))
+        });
         // Keys on demand: a mod's focused text field asks for them; nothing else takes them.
-        let options = OverlayOptions { placement: launch_apps.then_some(rune::OverlayPlacement::FullScreen), display: start, input: OverlayInput::Regions, level: OverlayLevel::AboveStatus, prewarm: true, keys: KeyPolicy::OnDemand, ..Default::default() };
-        // Scrolls and right-clicks: Rune routes only left presses to an overlay, so the panel's
-        // own events are watched once it exists.
+        let options = OverlayOptions {
+            placement: launch_apps.then_some(rune::OverlayPlacement::FullScreen),
+            display: start,
+            input: OverlayInput::Regions,
+            level: OverlayLevel::AboveStatus,
+            prewarm: true,
+            keys: KeyPolicy::OnDemand,
+            ..Default::default()
+        };
+        // Scroll and right-click input need a local panel monitor on macOS; the overlay host
+        // forwards primary presses but drops secondary mouse events.
         let slot: Arc<std::sync::OnceLock<OverlayHandle<Island>>> = Arc::default();
         let created = slot.clone();
         let overlay = app.overlay(
@@ -164,6 +193,10 @@ fn run() {
                 .compositor(shader::Shaders::default())
                 .on_created(move |c| {
                     let Some(window) = c.window_number else { return };
+                    let destination = crate::file_drop::install(window);
+                    if let Some(handle) = created.get() {
+                        handle.update(move |s, _| s.file_drop_destination = destination);
+                    }
                     platform::keys_only_on_request(window);
                     platform::watch_island_input(window, move |input| {
                         let Some(handle) = created.get() else { return };
@@ -172,7 +205,9 @@ fn run() {
                                 log::debug!("island scroll dx={dx:.1} dy={dy:.1} {phase:?} momentum={momentum} at {x:.0},{y:.0}");
                                 s.scroll(dx, dy, phase, momentum, Some((x, y)), tx);
                             }),
-                            platform::IslandInput::SecondaryClick { x, y } => handle.update(move |s, tx| s.menu((x, y), tx)),
+                            platform::IslandInput::SecondaryClick { x, y } => {
+                                handle.update(move |s, tx| s.menu((x, y), tx));
+                            }
                         }
                     });
                 }),
@@ -183,9 +218,12 @@ fn run() {
         let (ask, give) = (overlay.clone(), overlay.clone());
         overlay.update(move |s, _| {
             s.present_launcher = Some(Box::new(move |fullscreen, size| {
-                presentation.set_placement(fullscreen.then_some(rune::OverlayPlacement::FullScreen));
+                presentation
+                    .set_placement(fullscreen.then_some(rune::OverlayPlacement::FullScreen));
                 presentation.resize(size);
-                if fullscreen { presentation.request_keys(); }
+                if fullscreen {
+                    presentation.request_keys();
+                }
             }));
             s.request_keys = Some(Box::new(move || ask.request_keys()));
             s.release_keys = Some(Box::new(move || {
@@ -195,10 +233,26 @@ fn run() {
             }));
         });
         // Settings (and the first launch's onboarding), hidden until asked for.
-        let spec = AppSpec { poll: Some(settings::poll), ..AppSpec::new("openNook", settings::SIZE, settings::Settings::new, settings::view) };
+        let spec = AppSpec {
+            poll: Some(settings::poll),
+            ..AppSpec::new(
+                "openNook",
+                settings::SIZE,
+                settings::Settings::new,
+                settings::view,
+            )
+        };
         let window = WindowSpec::new("settings", spec)
-            .chrome(rune::Chrome { full_size_content: true, traffic_lights: Some((18.0, 18.0)), drag_regions: false })
-            .options(rune::WindowOptions { visible: false, min_size: Some((680.0, 480.0)), ..Default::default() });
+            .chrome(rune::Chrome {
+                full_size_content: true,
+                traffic_lights: Some((18.0, 18.0)),
+                drag_regions: false,
+            })
+            .options(rune::WindowOptions {
+                visible: false,
+                min_size: Some((680.0, 480.0)),
+                ..Default::default()
+            });
         let (settings_app, settings_window) = app.window(window);
         let opener = settings_app.clone();
         overlay.update(move |s, _| {
@@ -207,11 +261,27 @@ fn run() {
                 opener.open();
             }));
         });
+        let shelf_handle = overlay.clone();
+        overlay.update(move |s, _| {
+            s.add_shelf_files = Some(Box::new(move || {
+                let handle = shelf_handle.clone();
+                file_shelf::choose_files(move |paths| {
+                    handle.update(move |s, _| {
+                        s.file_shelf.add(&paths);
+                        s.show_file_shelf();
+                    });
+                });
+            }));
+        });
         if settings::first_launch() {
             settings_app.update(|s, _| s.onboarding = Some(0));
             settings_window.open();
         }
-        let mods = Mods::start(home::config(), store.clone(), OverlayHost(overlay.clone(), store.clone()));
+        let mods = Mods::start(
+            home::config(),
+            store.clone(),
+            OverlayHost(overlay.clone(), store.clone()),
+        );
         overlay.update(move |s, _| {
             s.mods = Some(mods);
             s.publish();
@@ -221,11 +291,18 @@ fn run() {
         watch_layout(overlay.clone(), store_for_layout);
         watch_displays(overlay.clone());
         overlay.show();
-        if launch_apps { overlay.request_keys(); }
+        if launch_apps {
+            overlay.request_keys();
+        }
         let probe = overlay.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1500));
-            log::info!("island: {:?} window={:?} {:?}", probe.availability(), probe.window_number(), probe.failure());
+            log::info!(
+                "island: {:?} window={:?} {:?}",
+                probe.availability(),
+                probe.window_number(),
+                probe.failure()
+            );
         });
         vec![WindowSpec::from_app("main", app)]
     });
@@ -233,74 +310,96 @@ fn run() {
 
 /// layout.json applies as it's saved; a broken edit keeps the last good layout.
 fn watch_layout(overlay: OverlayHandle<Island>, store: Arc<Store>) {
-    std::thread::Builder::new().name("nook-layout".into()).spawn(move || {
-        let dir = home::app_dir();
-        let mut stamp = home::layout_stamp(&dir);
-        let mut location = home::read_layout(&dir).map(|(l, _)| l.location).unwrap_or_default();
-        loop {
-            std::thread::sleep(Duration::from_millis(400));
-            let now = home::layout_stamp(&dir);
-            if now == stamp {
-                continue;
-            }
-            stamp = now;
-            if let Ok((layout, raw)) = home::read_layout(&dir) {
-                if layout.location != location {
-                    location = layout.location.clone();
-                    // On the main thread, where CoreLocation must be asked.
-                    let store = store.clone();
-                    overlay.update(move |_, _| services::location_setting_changed(store));
+    std::thread::Builder::new()
+        .name("nook-layout".into())
+        .spawn(move || {
+            let dir = home::app_dir();
+            let mut stamp = home::layout_stamp(&dir);
+            let mut location = home::read_layout(&dir)
+                .map(|(l, _)| l.location)
+                .unwrap_or_default();
+            loop {
+                std::thread::sleep(Duration::from_millis(400));
+                let now = home::layout_stamp(&dir);
+                if now == stamp {
+                    continue;
                 }
-                overlay.update(move |s, _| s.set_layout(layout, raw));
+                stamp = now;
+                if let Ok((layout, raw)) = home::read_layout(&dir) {
+                    if layout.location != location {
+                        location = layout.location.clone();
+                        // On the main thread, where CoreLocation must be asked.
+                        let store = store.clone();
+                        overlay.update(move |_, _| services::location_setting_changed(store));
+                    }
+                    overlay.update(move |s, _| s.set_layout(layout, raw));
+                }
             }
-        }
-    }).expect("layout thread");
+        })
+        .expect("layout thread");
 }
 
 /// Keeps the island on the display its mode picks (following the pointer, or a display being
 /// plugged in), and out of the way of a full-screen app there.
 fn watch_displays(overlay: OverlayHandle<Island>) {
-    std::thread::Builder::new().name("nook-displays".into()).spawn(move || {
-        let mut on: Option<platform::Display> = None;
-        let mut hidden = false;
-        let mut checked = std::time::Instant::now() - Duration::from_secs(10);
-        loop {
-            std::thread::sleep(Duration::from_millis(300));
-            let all = platform::displays();
-            let Some(target) = island::pick(island::display_mode(), &all, platform::pointer()).copied() else { continue };
-            if on != Some(target) {
-                if on.map(|d| d.id) != Some(target.id) {
-                    overlay.set_display(DisplayTarget::Native(rune::NativeDisplayId::MacOS(target.id)));
+    std::thread::Builder::new()
+        .name("nook-displays".into())
+        .spawn(move || {
+            let mut on: Option<platform::Display> = None;
+            let mut hidden = false;
+            let mut checked = std::time::Instant::now() - Duration::from_secs(10);
+            loop {
+                std::thread::sleep(Duration::from_millis(300));
+                let all = platform::displays();
+                let Some(target) =
+                    island::pick(island::display_mode(), &all, platform::pointer()).copied()
+                else {
+                    continue;
+                };
+                if on != Some(target) {
+                    if on.map(|d| d.id) != Some(target.id) {
+                        overlay.set_display(DisplayTarget::Native(rune::NativeDisplayId::MacOS(
+                            target.id,
+                        )));
+                    }
+                    on = Some(target);
+                    let notch = Notch::of(&target);
+                    overlay.update(move |s, _| s.set_notch(notch));
+                    // A move re-measures at once.
+                    checked = std::time::Instant::now() - Duration::from_secs(10);
                 }
-                on = Some(target);
-                let notch = Notch::of(&target);
-                overlay.update(move |s, _| s.set_notch(notch));
-                // A move re-measures at once.
-                checked = std::time::Instant::now() - Duration::from_secs(10);
-            }
-            // The window list costs about a millisecond: once a second is plenty.
-            if checked.elapsed() < Duration::from_secs(1) {
-                continue;
-            }
-            checked = std::time::Instant::now();
-            let hide = island::HIDE_IN_FULL_SCREEN.load(std::sync::atomic::Ordering::Relaxed) && platform::fullscreen_on(&target);
-            if hide != hidden {
-                hidden = hide;
-                log::info!("island: {} (full screen on display {})", if hide { "hidden" } else { "shown" }, target.id);
-                if hide {
-                    overlay.fade_out(Duration::from_millis(180));
-                } else {
-                    overlay.fade_in(Duration::from_millis(180));
+                // The window list costs about a millisecond: once a second is plenty.
+                if checked.elapsed() < Duration::from_secs(1) {
+                    continue;
+                }
+                checked = std::time::Instant::now();
+                let hide = island::HIDE_IN_FULL_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
+                    && platform::fullscreen_on(&target);
+                if hide != hidden {
+                    hidden = hide;
+                    log::info!(
+                        "island: {} (full screen on display {})",
+                        if hide { "hidden" } else { "shown" },
+                        target.id
+                    );
+                    if hide {
+                        overlay.fade_out(Duration::from_millis(180));
+                    } else {
+                        overlay.fade_in(Duration::from_millis(180));
+                    }
                 }
             }
-        }
-    }).expect("display thread");
+        })
+        .expect("display thread");
 }
 
 fn already_running() -> Option<u32> {
     let path = home::app_dir().join("opennook.pid");
     let _ = std::fs::create_dir_all(home::app_dir());
-    if let Some(pid) = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
+    if let Some(pid) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| t.trim().parse::<i32>().ok())
+    {
         // Signal 0 only asks whether the process exists.
         if pid != std::process::id() as i32 && unsafe { libc::kill(pid, 0) } == 0 {
             return Some(pid as u32);
@@ -313,7 +412,9 @@ fn already_running() -> Option<u32> {
 /// `check` and `shot` have no main run loop for CoreLocation to answer on.
 /// check and shot never ask CoreLocation; a place set in Settings needs no asking.
 fn no_location(store: &Store) {
-    let setting = home::read_layout(&home::app_dir()).map(|(l, _)| l.location).unwrap_or_default();
+    let setting = home::read_layout(&home::app_dir())
+        .map(|(l, _)| l.location)
+        .unwrap_or_default();
     store.publish("location", setting.place().unwrap_or_else(|| serde_json::json!({ "error": "No location in check and shot; set a place in Settings › General › Location to try it here." })));
 }
 
@@ -322,7 +423,9 @@ fn layout_theme(raw: &Value) -> Value {
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn check(args: &[String]) -> i32 {
@@ -330,11 +433,15 @@ fn check(args: &[String]) -> i32 {
         eprintln!("usage: opennook check <mod folder> [--wait ms]");
         return 2;
     };
-    let wait = flag(args, "--wait").and_then(|w| w.parse().ok()).unwrap_or(1500);
+    let wait = flag(args, "--wait")
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(1500);
     let _ = home::write_workspace();
     services::start_core();
     let store: Arc<Store> = Arc::default();
-    let raw = home::read_layout(&home::app_dir()).map(|(_, raw)| raw).unwrap_or(Value::Null);
+    let raw = home::read_layout(&home::app_dir())
+        .map(|(_, raw)| raw)
+        .unwrap_or(Value::Null);
     let (theme, _) = theme::Theme::resolve(&layout_theme(&raw), &home::app_dir());
     store.publish("theme", theme.to_json());
     store.publish("themes", theme::list(&home::app_dir(), &layout_theme(&raw)));
@@ -347,7 +454,12 @@ fn check(args: &[String]) -> i32 {
         "notch": { "width": notch.w, "height": notch.h, "hasNotch": notch.has }, "screen": { "width": notch.screen.0, "height": notch.screen.1 } }));
     // Let the first media and agent answers land, as they would in the running island.
     std::thread::sleep(Duration::from_millis(300));
-    let checked = match nook_mods::check(home::config(), store, PathBuf::from(dir), Duration::from_millis(wait)) {
+    let checked = match nook_mods::check(
+        home::config(),
+        store,
+        PathBuf::from(dir),
+        Duration::from_millis(wait),
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
@@ -358,7 +470,13 @@ fn check(args: &[String]) -> i32 {
     let mut problems: Vec<String> = out.error.iter().cloned().collect();
     let mut nodes = Vec::new();
     if let Some(a) = &out.activity {
-        nodes.extend(a.leading.iter().chain(a.trailing.iter()).chain(a.detail.iter()).chain(a.notice.iter()));
+        nodes.extend(
+            a.leading
+                .iter()
+                .chain(a.trailing.iter())
+                .chain(a.detail.iter())
+                .chain(a.notice.iter()),
+        );
     }
     nodes.extend(out.expanded.iter());
     for n in nodes {
@@ -372,7 +490,9 @@ fn check(args: &[String]) -> i32 {
             if n.t == nook_mods::node::Kind::Icon {
                 let name = n.v.as_deref().unwrap_or_default();
                 if icons::get(name, &out.dir).is_none() {
-                    problems.push(format!("unknown icon {name:?} (AGENTS.md lists the built-in ones)"));
+                    problems.push(format!(
+                        "unknown icon {name:?} (AGENTS.md lists the built-in ones)"
+                    ));
                 }
             }
         });
@@ -380,7 +500,9 @@ fn check(args: &[String]) -> i32 {
     if let Some(icon) = out.icon.as_deref().filter(|i| !i.starts_with("app:")) {
         if icons::is_picture(icon) {
             if !out.dir.join(icon).is_file() {
-                problems.push(format!("mod.json: no icon file {icon:?} in the mod's folder"));
+                problems.push(format!(
+                    "mod.json: no icon file {icon:?} in the mod's folder"
+                ));
             }
         } else if icons::get(icon, &out.dir).is_none() {
             problems.push(format!("mod.json: unknown icon {icon:?}"));
@@ -411,7 +533,11 @@ fn check(args: &[String]) -> i32 {
 
 /// Renders the island headless with live mods: what an agent looks at after a change.
 fn shot(args: &[String]) -> i32 {
-    let out = args.first().filter(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| "island.png".into());
+    let out = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| "island.png".into());
     if args.iter().any(|a| a == "--settings") {
         let mut state = settings::Settings::new();
         state.page = match flag(args, "--page").as_deref() {
@@ -428,18 +554,38 @@ fn shot(args: &[String]) -> i32 {
             _ => settings::Page::Widgets,
         };
         state.onboarding = flag(args, "--onboarding").and_then(|n| n.parse().ok());
-        let spec = AppSpec::new("openNook", settings::SIZE, settings::Settings::new, settings::view);
+        let spec = AppSpec::new(
+            "openNook",
+            settings::SIZE,
+            settings::Settings::new,
+            settings::view,
+        );
         let size = format!("{}x{}", settings::SIZE.0, settings::SIZE.1);
         let path = PathBuf::from(&out);
-        App::new(spec).init(move || state)
-            .args(["--snap".to_owned(), out.clone(), "--size".into(), size, "--scale".into(), "2".into(), "--chrome".into()])
-            .chrome(rune::Chrome { full_size_content: true, traffic_lights: Some((18.0, 18.0)), drag_regions: false })
+        App::new(spec)
+            .init(move || state)
+            .args([
+                "--snap".to_owned(),
+                out.clone(),
+                "--size".into(),
+                size,
+                "--scale".into(),
+                "2".into(),
+                "--chrome".into(),
+            ])
+            .chrome(rune::Chrome {
+                full_size_content: true,
+                traffic_lights: Some((18.0, 18.0)),
+                drag_regions: false,
+            })
             .run();
         println!("{}", path.canonicalize().unwrap_or(path).display());
         return 0;
     }
     let open = args.iter().any(|a| a == "--open") || flag(args, "--mod").is_some();
-    let wait = flag(args, "--wait").and_then(|w| w.parse().ok()).unwrap_or(2500);
+    let wait = flag(args, "--wait")
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(2500);
     let (mut island, store) = prepare();
     let fullscreen = args.iter().any(|a| a == "--fullscreen");
     if fullscreen {
@@ -450,7 +596,10 @@ fn shot(args: &[String]) -> i32 {
     }
     let outputs: Arc<Mutex<BTreeMap<String, Output>>> = Arc::default();
     let inputs: Arc<Mutex<Vec<(String, u64, Value)>>> = Arc::default();
-    struct Collect(Arc<Mutex<BTreeMap<String, Output>>>, Arc<Mutex<Vec<(String, u64, Value)>>>);
+    struct Collect(
+        Arc<Mutex<BTreeMap<String, Output>>>,
+        Arc<Mutex<Vec<(String, u64, Value)>>>,
+    );
     impl Host for Collect {
         fn output(&self, out: Output) {
             self.0.lock().unwrap().insert(out.name.clone(), out);
@@ -464,7 +613,11 @@ fn shot(args: &[String]) -> i32 {
         }
     }
     no_location(&store);
-    let mods = Mods::start(home::config(), store.clone(), Collect(outputs.clone(), inputs.clone()));
+    let mods = Mods::start(
+        home::config(),
+        store.clone(),
+        Collect(outputs.clone(), inputs.clone()),
+    );
     services::start_agents(store.clone());
     services::start(store);
     std::thread::sleep(Duration::from_millis(wait));
@@ -473,10 +626,20 @@ fn shot(args: &[String]) -> i32 {
     // Remote pictures, as the island would have them by now.
     let mut urls = Vec::new();
     for o in island.outputs.values() {
-        let nodes = o.expanded.iter().chain(o.activity.iter().flat_map(|a| a.leading.iter().chain(a.trailing.iter()).chain(a.detail.iter()).chain(a.notice.iter())));
+        let nodes = o.expanded.iter().chain(o.activity.iter().flat_map(|a| {
+            a.leading
+                .iter()
+                .chain(a.trailing.iter())
+                .chain(a.detail.iter())
+                .chain(a.notice.iter())
+        }));
         for n in nodes {
             n.walk(&mut |n| {
-                if n.t == nook_mods::node::Kind::Image && let Some(src) = n.v.as_ref().filter(|v| v.starts_with("http://") || v.starts_with("https://")) {
+                if n.t == nook_mods::node::Kind::Image
+                    && let Some(src) =
+                        n.v.as_ref()
+                            .filter(|v| v.starts_with("http://") || v.starts_with("https://"))
+                {
                     urls.push(src.clone());
                 }
             });
@@ -491,21 +654,57 @@ fn shot(args: &[String]) -> i32 {
     if let Some(m) = flag(args, "--mod") {
         island.select(&m);
     }
-    let canvas_h = island.launcher_fullscreen.map_or(CANVAS_H, |(_, height)| height);
+    let canvas_h = island
+        .launcher_fullscreen
+        .map_or(CANVAS_H, |(_, height)| height);
     let size = format!("{}x{}", island.canvas_w(), canvas_h);
     // After `--`: Rune's own tooling flags in place of the still (`--script s.json --strip x.png
     // --frames 30 --every 2`, `--tree t.json`, …), for looking at motion.
-    let rune_args: Vec<String> = args.iter().skip_while(|a| *a != "--").skip(1).cloned().collect();
-    let spec = AppSpec { setup: Some(island_setup), ..AppSpec::new("openNook", (island.canvas_w(), canvas_h), || Island::new(Notch::detect(island::display_mode()), home::Layout::default()), island::view) };
+    let rune_args: Vec<String> = args
+        .iter()
+        .skip_while(|a| *a != "--")
+        .skip(1)
+        .cloned()
+        .collect();
+    let spec = AppSpec {
+        setup: Some(island_setup),
+        ..AppSpec::new(
+            "openNook",
+            (island.canvas_w(), canvas_h),
+            || {
+                Island::new(
+                    Notch::detect(island::display_mode()),
+                    home::Layout::default(),
+                )
+            },
+            island::view,
+        )
+    };
     let path = PathBuf::from(&out);
     App::new(spec)
         .init(move || island)
         .compositor(shader::Shaders::default())
-        .window_options(rune::WindowOptions { transparent: true, ..Default::default() })
+        .window_options(rune::WindowOptions {
+            transparent: true,
+            ..Default::default()
+        })
         .args(if rune_args.is_empty() {
-            vec!["--snap".to_owned(), out.clone(), "--size".into(), size, "--scale".into(), "2".into(), "--at".into(), "1".into()]
+            vec![
+                "--snap".to_owned(),
+                out.clone(),
+                "--size".into(),
+                size,
+                "--scale".into(),
+                "2".into(),
+                "--at".into(),
+                "1".into(),
+            ]
         } else {
-            [vec!["--size".to_owned(), size, "--scale".into(), "2".into()], rune_args].concat()
+            [
+                vec!["--size".to_owned(), size, "--scale".into(), "2".into()],
+                rune_args,
+            ]
+            .concat()
         })
         .run();
     println!("{}", path.canonicalize().unwrap_or(path).display());

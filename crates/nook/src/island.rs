@@ -174,6 +174,7 @@ pub struct Island {
     pub expanded: bool,
     pub selected: Option<String>,
     pub hover: bool,
+    pub context_menu_open: bool,
     pub mod_dragging: bool,
     hover_at: Instant,
     /// When the pointer last left; None until it has been over the island.
@@ -194,6 +195,10 @@ pub struct Island {
     pub quit: bool,
     /// Opens the settings window (set once it exists).
     pub open_settings: Option<Box<dyn Fn()>>,
+    pub add_shelf_files: Option<Box<dyn Fn()>>,
+    pub file_shelf: crate::file_shelf::Shelf,
+    pub file_drop_destination: Option<usize>,
+    pub(crate) file_drop_hover: bool,
     /// Mods' text fields.
     pub fields: Fields,
     /// Takes the keyboard for a focused field, and gives it back to the app it came from (set
@@ -249,6 +254,7 @@ impl Island {
             expanded: false,
             selected: None,
             hover: false,
+            context_menu_open: false,
             mod_dragging: false,
             hover_at: Instant::now(),
             left_at: None,
@@ -263,6 +269,10 @@ impl Island {
             notes: problem.into_iter().collect(),
             quit: false,
             open_settings: None,
+            add_shelf_files: None,
+            file_shelf: crate::file_shelf::load(),
+            file_drop_destination: None,
+            file_drop_hover: false,
             fields: Fields::default(),
             request_keys: None,
             release_keys: None,
@@ -547,12 +557,26 @@ impl Island {
     }
 
     fn page(&self) -> Option<&Output> {
+        if self.selected.as_deref() == Some("file-shelf") {
+            return None;
+        }
         let pages = self.pages();
         self.selected
             .as_deref()
             .and_then(|s| pages.iter().copied().find(|o| o.name == s))
             .or_else(|| self.active().filter(|a| a.has_expanded))
             .or_else(|| pages.first().copied())
+    }
+
+    pub fn show_file_shelf(&mut self) {
+        self.file_shelf.reload();
+        self.set_expanded(true);
+        self.select("file-shelf");
+        self.peek_until = Some(Instant::now() + Duration::from_secs(3));
+    }
+
+    pub(crate) fn keep_open_for(&mut self, duration: Duration) {
+        self.peek_until = Some(Instant::now() + duration);
     }
 
     /// Selects a page; content slides in from the side it sits on.
@@ -580,7 +604,7 @@ impl Island {
 
     /// How far the tab strip scrolls: its tabs' width less the strip's.
     fn tabs_max(&self) -> f32 {
-        let n = self.pages().len() as f32;
+        let n = self.pages().len() as f32 + 1.0;
         (TABS_LEFT + n * TAB_W + (n - 1.0).max(0.0) * TAB_GAP + TABS_RIGHT - self.tabs_w()).max(0.0)
     }
 
@@ -840,7 +864,9 @@ impl Island {
     /// island closes as it would have, had the pointer left while someone typed.
     pub fn field_left(&mut self, tx: &mut Tx) {
         if self.launcher_fullscreen.is_some() {
-            if let Some(ask) = &self.request_keys { ask(); }
+            if let Some(ask) = &self.request_keys {
+                ask();
+            }
             return;
         }
         self.give_keys_back();
@@ -1008,29 +1034,45 @@ impl Look {
 impl Island {
     /// The island's menu (right-click), at `at` in window points.
     pub fn menu(&mut self, at: (f32, f32), tx: &mut Tx) {
+        if self.expanded && self.selected.as_deref() == Some("file-shelf") {
+            crate::file_shelf::context_menu(self, at, tx);
+            return;
+        }
         let menu = PopupMenu::new()
             .item(PopupItem::new("settings", "Settings…"))
+            .item(PopupItem::new("file-shelf", "文件暂存…"))
             .item(PopupItem::new("folder", "Open Mods Folder"))
             .item(PopupItem::new("guide", "Open AGENTS.md"))
             .separator()
             .item(PopupItem::new("quit", "Quit openNook"));
+        self.context_menu_open = true;
         tx.popup_menu(menu, at, |s: &mut Island, picked, tx| match picked {
             Some("settings") => {
+                s.context_menu_open = false;
                 if let Some(open) = &s.open_settings {
                     open();
                 }
             }
+            Some("file-shelf") => {
+                s.context_menu_open = false;
+                s.set_expanded(true);
+                s.file_shelf.reload();
+                s.select("file-shelf");
+            }
             Some("folder") => {
+                s.context_menu_open = false;
                 let _ = open::that_detached(crate::home::app_dir().join("mods"));
             }
             Some("guide") => {
+                s.context_menu_open = false;
                 let _ = open::that_detached(crate::home::app_dir().join("AGENTS.md"));
             }
             Some("quit") => {
+                s.context_menu_open = false;
                 s.quit = true;
                 tx.quit();
             }
-            _ => {}
+            _ => s.context_menu_open = false,
         });
     }
 }
@@ -1078,6 +1120,33 @@ mod display_tests {
 
 pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
     let now = Instant::now();
+    if let Some(destination) = s.file_drop_destination {
+        let events = crate::file_drop::take(destination);
+        let changed = !events.is_empty();
+        for event in events {
+            match event {
+                crate::file_drop::Event::Hover(hover) => {
+                    s.file_drop_hover = hover;
+                    if hover {
+                        s.set_expanded(true);
+                        s.select("file-shelf");
+                    } else {
+                        s.left_at = Some(now);
+                    }
+                }
+                crate::file_drop::Event::Drop(paths) => {
+                    s.file_drop_hover = false;
+                    s.file_shelf.add(&paths);
+                    s.set_expanded(true);
+                    s.select("file-shelf");
+                    s.peek_until = Some(now + Duration::from_secs(3));
+                }
+            }
+        }
+        if changed {
+            return true;
+        }
+    }
     if s.compact_notice
         .as_ref()
         .is_some_and(|(_, until)| now >= *until)
@@ -1101,7 +1170,14 @@ pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
         return true;
     }
     // Typing and an in-progress drag hold the island open, wherever the pointer went.
-    if s.expanded && s.launcher_fullscreen.is_none() && !s.hover && !s.fields.typing() && !s.mod_dragging {
+    if s.expanded
+        && s.launcher_fullscreen.is_none()
+        && !s.hover
+        && !s.fields.typing()
+        && !s.mod_dragging
+        && !s.file_drop_hover
+        && !s.context_menu_open
+    {
         let peeking = s.peek_until.is_some_and(|t| now < t);
         let left = s.left_at.is_some_and(|t| {
             now.duration_since(t) >= Duration::from_millis(opts.collapse_delay_ms)
@@ -1117,7 +1193,9 @@ pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
 /// The panel gained or lost the keyboard. Lost (a click in another app), a field that had it
 /// lets go, so the island can close.
 pub fn key(s: &mut Island, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
-    if s.launcher_fullscreen.is_none() { return false; }
+    if s.launcher_fullscreen.is_none() {
+        return false;
+    }
     match event.key {
         rune::Key::Escape => {
             tx.blur();
@@ -1183,9 +1261,22 @@ fn wing(left: bool, color: Color, size: f32) -> El {
 pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
     if let Some((width, height)) = s.launcher_fullscreen {
         s.scrollers_drawn.borrow_mut().clear();
-        let content = s.page().and_then(|page| page.expanded.as_ref().map(|node| render::node(node, &rcx(s, page)))).unwrap_or_else(col);
-        let mut backdrop = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).fill(Color::BLACK);
-        if let Some(image) = s.images.as_ref().and_then(|images| images.get("nook:wallpaper", std::path::Path::new(""), width)) {
+        let content = s
+            .page()
+            .and_then(|page| {
+                page.expanded
+                    .as_ref()
+                    .map(|node| render::node(node, &rcx(s, page)))
+            })
+            .unwrap_or_else(col);
+        let mut backdrop = el()
+            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .fill(Color::BLACK);
+        if let Some(image) = s
+            .images
+            .as_ref()
+            .and_then(|images| images.get("nook:wallpaper", std::path::Path::new(""), width))
+        {
             backdrop = backdrop.pixels_fit(image.pixels(), rune::SurfaceFit::Fill);
         }
         return col()
@@ -1195,8 +1286,16 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
             .hit()
             .on_press(|s: &mut Island| s.set_expanded(false))
             .child(backdrop)
-            .child(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).fill(Color::BLACK.alpha(0.08)))
+            .child(
+                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .fill(Color::BLACK.alpha(0.08)),
+            )
             .child(content);
+    }
+    if let Some(destination) = s.file_drop_destination {
+        if let Some(rect) = cx.layout_with("island/body", |rect| rect) {
+            crate::file_drop::region(destination, rect, s.mod_dragging, s.open_w());
+        }
     }
     let look = s.look();
     let glass = s.expanded && s.glass();
@@ -1522,6 +1621,7 @@ fn expanded(s: &Island, look: &Look) -> El {
     // More tabs than fit beside the camera slide under a clip; an edge fades while tabs hide
     // past it. A page's own tabs list may have shrunk since the strip was scrolled.
     let (offset, max) = (s.tabs_offset.min(s.tabs_max()), s.tabs_max());
+    let shelf_selected = s.selected.as_deref() == Some("file-shelf");
     let tabs = pages.iter().fold(
         row()
             .key("topbar/tabs/row")
@@ -1530,6 +1630,27 @@ fn expanded(s: &Island, look: &Look) -> El {
             .pr(TABS_RIGHT)
             .offset(-offset, 0.0),
         |r, o| r.child(tab(s, o, page.is_some_and(|p| p.name == o.name))),
+    );
+    let tabs = tabs.child(
+        row()
+            .key("file-shelf/tab")
+            .label("文件暂存")
+            .help("文件暂存")
+            .size(TAB_W, 24.0)
+            .radius(7.0)
+            .items_center()
+            .justify_center()
+            .hover(s.theme.color("raised"))
+            .fill(if shelf_selected {
+                s.theme.color("surface")
+            } else {
+                Color::BLACK.alpha(0.0)
+            })
+            .on_press(|s: &mut Island| {
+                s.file_shelf.reload();
+                s.select("file-shelf");
+            })
+            .child(crate::file_shelf::tab_icon(s, shelf_selected)),
     );
     let fade = |hidden: bool| if hidden { TABS_FADE } else { 0.0 };
     let strip = row()
@@ -1576,23 +1697,32 @@ fn expanded(s: &Island, look: &Look) -> El {
         .child(strip)
         .child(el().w(n.w).h_full())
         .child(controls);
-    let body = match page {
-        Some(p) => {
-            let content = match &p.expanded {
-                Some(node) => render::node(node, &rcx(s, p)),
-                None => col(),
-            };
-            let mut body = col()
-                .key(format!("page/{}", p.name))
-                .w_full()
-                .transition(swap(SLIDE_X * s.page_dir, 0.0))
-                .child(content);
-            if let Some(e) = &p.error {
-                body = body.child(problem(s, &p.name, e));
+    let body = if shelf_selected {
+        s.scrollers_drawn.borrow_mut().push(Scroller {
+            key: "file-shelf/list".into(),
+            stick_bottom: false,
+            pad: 0.0,
+        });
+        crate::file_shelf::island_view(s, w - 32.0)
+    } else {
+        match page {
+            Some(p) => {
+                let content = match &p.expanded {
+                    Some(node) => render::node(node, &rcx(s, p)),
+                    None => col(),
+                };
+                let mut body = col()
+                    .key(format!("page/{}", p.name))
+                    .w_full()
+                    .transition(swap(SLIDE_X * s.page_dir, 0.0))
+                    .child(content);
+                if let Some(e) = &p.error {
+                    body = body.child(problem(s, &p.name, e));
+                }
+                body
             }
-            body
+            None => empty(s),
         }
-        None => empty(s),
     };
     let bottom_padding = if page.is_some_and(|p| p.name == "dashboard") {
         6.0
@@ -1771,8 +1901,10 @@ mod scroll_tests {
                     title: name.into(),
                     has_expanded: true,
                     expanded: Some(
-                        serde_json::from_value(json!({ "t": "box", "s": { "dir": "col", "h": 40.0 } }))
-                            .unwrap(),
+                        serde_json::from_value(
+                            json!({ "t": "box", "s": { "dir": "col", "h": 40.0 } }),
+                        )
+                        .unwrap(),
                     ),
                     ..Default::default()
                 },
@@ -1789,7 +1921,10 @@ mod scroll_tests {
         rt.update(|s, tx| {
             s.scroll(0.0, -35.0, GesturePhase::Began, false, Some(at), tx);
         });
-        assert!(rt.state.expanded, "an up swipe on the launcher keeps it open");
+        assert!(
+            rt.state.expanded,
+            "an up swipe on the launcher keeps it open"
+        );
         assert_eq!(rt.state.page().unwrap().name, "app-launcher");
     }
 
@@ -1800,16 +1935,23 @@ mod scroll_tests {
         let mut rt = island_with_pages(1);
         let normal = (rt.state.canvas_w(), CANVAS_H);
         let observed = changes.clone();
-        rt.state.present_launcher = Some(Box::new(move |full, size| observed.borrow_mut().push((full, size))));
+        rt.state.present_launcher = Some(Box::new(move |full, size| {
+            observed.borrow_mut().push((full, size))
+        }));
         let screen = rt.state.notch.screen;
         for exit in ["escape", "background", "button", "launch", "tab"] {
             rt.update(|s, _| s.set_launcher_fullscreen(Some(screen)));
             rt.set_viewport(screen, 1.0);
-            for _ in 0..30 { rt.frame(1.0 / 60.0); }
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
             match exit {
                 "escape" => {
                     rt.on_key = Some(key);
-                    rt.key(rune::KeyEvent { key: rune::Key::Escape, mods: Default::default() });
+                    rt.key(rune::KeyEvent {
+                        key: rune::Key::Escape,
+                        mods: Default::default(),
+                    });
                     rt.frame(0.0);
                 }
                 "background" => {
@@ -1817,12 +1959,27 @@ mod scroll_tests {
                     rt.pointer_up(10.0, screen.1 - 10.0);
                     rt.frame(0.0);
                 }
-                "button" => rt.update(|s, tx| s.command("app-launcher", "island.app-launcher-fullscreen", &json!({"enabled": false}), tx)),
-                "launch" => rt.update(|s, tx| s.command("app-launcher", "island.collapse", &Value::Null, tx)),
+                "button" => rt.update(|s, tx| {
+                    s.command(
+                        "app-launcher",
+                        "island.app-launcher-fullscreen",
+                        &json!({"enabled": false}),
+                        tx,
+                    )
+                }),
+                "launch" => rt
+                    .update(|s, tx| s.command("app-launcher", "island.collapse", &Value::Null, tx)),
                 _ => rt.update(|s, _| s.select("p00")),
             }
-            assert!(rt.state.launcher_fullscreen.is_none(), "{exit} left fullscreen active");
-            assert_eq!(changes.borrow().last(), Some(&(false, normal)), "{exit} left native bounds fullscreen");
+            assert!(
+                rt.state.launcher_fullscreen.is_none(),
+                "{exit} left fullscreen active"
+            );
+            assert_eq!(
+                changes.borrow().last(),
+                Some(&(false, normal)),
+                "{exit} left native bounds fullscreen"
+            );
         }
     }
 
@@ -1857,6 +2014,25 @@ mod scroll_tests {
             rt.frame(1.0 / 60.0);
         }
         rt
+    }
+
+    #[test]
+    fn file_shelf_tab_stays_beside_existing_tabs_and_opens_inside_island() {
+        let mut rt = island_with_pages(2);
+        let files = rt.presented("file-shelf/tab").expect("files tab drawn").0;
+        let previous = rt.presented("tab/p01").unwrap().0;
+        let strip = rt.presented("topbar/tabs").unwrap().0;
+        assert!(files[0] >= previous[0] + previous[2]);
+        assert!(files[0] + files[2] <= strip[0] + strip[2]);
+        let (x, y) = rt.find("file-shelf/tab").unwrap();
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.selected.as_deref(), Some("file-shelf"));
+        assert!(rt.find("file-shelf/page").is_some());
     }
 
     fn tab_x(rt: &Runtime<Island>, i: usize) -> f32 {
@@ -1956,5 +2132,21 @@ mod scroll_tests {
             "moved {}",
             row_y(&rt, "m/t/r19") - last
         );
+    }
+
+    #[test]
+    fn an_open_context_menu_holds_the_island_open_until_dismissed() {
+        let mut rt = island_with_list(false);
+        rt.update(|s, tx| {
+            s.hover = false;
+            s.left_at = Some(Instant::now() - Duration::from_secs(5));
+            s.context_menu_open = true;
+            assert!(!poll(s, 0.0, tx));
+            assert!(s.expanded);
+
+            s.context_menu_open = false;
+            assert!(poll(s, 0.0, tx));
+            assert!(!s.expanded);
+        });
     }
 }
