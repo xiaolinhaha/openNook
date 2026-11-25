@@ -8,7 +8,8 @@
     "hideInFullScreen": true,
     "glass": false,
     "glassTint": 0.5,
-    "haptics": true
+    "haptics": true,
+    "backgroundStyle": "black"
   },
   "compact": [
     "dashboard"
@@ -57,5 +58,5 @@
       }
     }
   },
-  "theme": "graphite"
+  "theme": "default"
 }

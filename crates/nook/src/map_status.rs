@@ -137,7 +137,7 @@ fn read_store(path: &Path, started: Option<u64>, now: u64) -> rusqlite::Result<V
             let outcome: Option<String> = row.get(8)?;
 
             let state = match kind.as_deref() {
-                Some("turn.started") if started.is_some_and(|launch| at >= launch) => "running",
+                Some("turn.started") if now.saturating_sub(at) < 30 * 60_000 => "running",
                 Some("turn.ended") => match outcome.as_deref() {
                     Some("completed") => "completed",
                     Some("failed") => "failed",
