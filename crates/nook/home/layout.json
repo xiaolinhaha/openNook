@@ -15,7 +15,8 @@
   ],
   "expanded": [
     "dashboard",
-    "app-launcher"
+    "app-launcher",
+    "ai-workbench"
   ],
   "hidden": [
     "codex",
@@ -32,24 +33,26 @@
     "dashboard": {
       "props": {
         "activeWidgets": [
-          "soda-music",
           "codex",
-          "clock",
           "map",
-          "battery",
+          "clock",
           "network",
           "rings",
+          "battery",
           "launchers"
         ],
+        "widgetRows": [
+          ["codex", "map", "clock"],
+          ["network", "rings", "battery", "launchers"]
+        ],
         "widgetStyles": {
-          "battery": "muted",
-          "map": "dark",
-          "clock": "macaron",
           "codex": "classic",
-          "launchers": "solid",
-          "network": "vibrant",
+          "map": "classic",
+          "clock": "classic",
+          "network": "classic",
           "rings": "classic",
-          "soda-music": "klein"
+          "battery": "classic",
+          "launchers": "classic"
         }
       }
     }

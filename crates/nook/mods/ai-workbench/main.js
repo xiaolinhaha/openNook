@@ -1,171 +1,168 @@
 import { View, row, col, div, text, icon } from "nook/ui";
-import { agents, codexStatus, exec, island, mapStatus, run } from "nook";
+import { agents, codexStatus, exec, home, island, mapStatus, run } from "nook";
+
+const MAP_BUNDLE = "com.xiaolinhaha.map";
+
+function formatRelativeTime(epochMs) {
+  if (!epochMs || !Number.isFinite(epochMs)) return "刚刚";
+  const diffSec = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
+  if (diffSec < 45) return "刚刚";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+  const days = Math.floor(diffSec / 86400);
+  return days === 1 ? "昨天" : `${days} 天前`;
+}
+
+function shortenPath(p) {
+  if (!p) return "~";
+  const userHome = home();
+  if (userHome && p.startsWith(userHome)) {
+    p = "~" + p.slice(userHome.length);
+  }
+  const parts = p.split("/").filter(Boolean);
+  if (parts.length > 2) {
+    return parts.slice(-2).join("/");
+  }
+  return p;
+}
+
+function formatModelName(model) {
+  if (!model) return "AI";
+  return model
+    .replace(/^antigravity:/i, "")
+    .replace(/^codex:/i, "")
+    .replace(/^grok:/i, "")
+    .replace(/^gpt-/i, "GPT-")
+    .replace(/^gemini-/i, "Gemini-")
+    .replace(/(^|[-_])([a-z])/g, (_, sep, letter) => `${sep === "-" || sep === "_" ? " " : ""}${letter.toUpperCase()}`);
+}
 
 export default class AiWorkbench extends View {
   init(_props, cx) {
     this.cx = cx;
     this.tasks = [];
-    this.grantedPermissions = new Set();
 
     this.refresh = (cx) => {
       const liveAgents = agents() || [];
-      const codex = codexStatus();
       const map = mapStatus();
+      const mapSessions = map?.sessions || [];
 
-      // Default high-fidelity task presets matching design specification
-      const presetTasks = [
-        {
-          id: "claude-island",
-          brand: "Claude Code",
-          iconName: "sparkle",
-          iconColor: "#e06c45",
-          iconBg: "#2a1814",
-          title: "重构 Native Island 布局",
-          status: "waiting_input",
-          statusLabel: "待处理输入",
-          statusColor: "#ff9f0a",
-          statusBg: "#2b1d0c",
-          statusBorder: "#4d3215",
-          dotColor: "#ff9f0a",
-          file: "openNook/hud/src/island.tsx",
-          model: "claude-3-7-sonnet",
-          time: "2 分钟前",
-          actionType: "jump_review",
-          actionLabel: "确认 3 个文件修改",
-          actionTime: "刚刚",
-        },
-        {
-          id: "codex-telemetry",
-          brand: "Codex",
-          iconName: "bot",
-          iconColor: "#388bfd",
-          iconBg: "#142034",
-          title: "Token 与配额遥测接口对接",
-          status: "running",
-          statusLabel: "运行中",
-          statusColor: "#30d158",
-          statusBg: "#132a1c",
-          statusBorder: "#1e462d",
-          dotColor: "#30d158",
-          file: "services/telemetry/codex_worker.go",
-          model: "gpt-6.2-sol",
-          time: "8 分钟前",
-          actionType: "progress",
-          progressLabel: "● 执行单元测试 [4/7]",
-          actionTime: "2 分钟前",
-        },
-        {
-          id: "gemini-hud",
-          brand: "Gemini CLI",
-          iconName: "gem",
-          iconColor: "#7c9bf8",
-          iconBg: "#181e38",
-          title: "桌面 HUD 视觉比对与暗黑模式适配",
-          status: "running",
-          statusLabel: "运行中",
-          statusColor: "#64d2ff",
-          statusBg: "#102636",
-          statusBorder: "#1b4260",
-          dotColor: "#64d2ff",
-          file: "scripts/visual-regression.py",
-          model: "gemini-2.5-pro",
-          time: "14 分钟前",
-          actionType: "progress",
-          progressLabel: "分析截图 diff 88%",
-          actionTime: "5 分钟前",
-        },
-        {
-          id: "claude-audio",
-          brand: "Claude Code",
-          iconName: "activity",
-          iconColor: "#e06c45",
-          iconBg: "#2a1814",
-          title: "CoreAudio 低延迟流管道实现",
-          status: "waiting_permission",
-          statusLabel: "待确认权限",
-          statusColor: "#ff9f0a",
-          statusBg: "#2b1d0c",
-          statusBorder: "#4d3215",
-          dotColor: "#ff9f0a",
-          file: "native/audio/coreaudio_driver.m",
-          model: "claude-3-7-sonnet",
-          time: "28 分钟前",
-          actionType: "permission",
-          actionTime: "12 分钟前",
-        },
-        {
-          id: "codex-bus",
-          brand: "Codex",
-          iconName: "zap",
-          iconColor: "#8e8e93",
-          iconBg: "#1e2028",
-          title: "全局 ⌥ + 空格 事件总线优化",
-          status: "succeeded",
-          statusLabel: "已完成",
-          statusColor: "#30d158",
-          statusBg: "#132a1c",
-          statusBorder: "#1e462d",
-          dotColor: "#30d158",
-          file: "daemon/keybinding_listener.swift",
-          model: "gpt-6.2-sol",
-          time: "1 小时前",
-          actionType: "pr",
-          progressLabel: "PR #142 已生成",
-          actionTime: "35 分钟前",
-        },
-        {
-          id: "gemini-audit",
-          brand: "Gemini CLI",
-          iconName: "terminal",
-          iconColor: "#8e8e93",
-          iconBg: "#1e2028",
-          title: "第三方 Cargo 与 NPM 依赖漏洞扫描",
-          status: "idle",
-          statusLabel: "就绪/闲置",
-          statusColor: "#8e8e93",
-          statusBg: "#1f2127",
-          statusBorder: "#2c2e36",
-          dotColor: "#8e8e93",
-          file: "ci/security-audit.yml",
-          model: "gemini-2.5-flash",
-          time: "3 小时前",
-          actionType: "idle",
-          progressLabel: "0 高危风险 · 待命",
-          actionTime: "1 小时前",
-        },
-      ];
+      const list = [];
 
-      // Merge real active sessions if present
-      const dynamicList = [];
+      // 1. Standalone Codex / CLI Agents
       for (const agent of liveAgents) {
-        const isRunning = agent.status === "working";
-        dynamicList.push({
+        const isWorking = agent.status === "working";
+        const isCodex = String(agent.kind ?? "").toLowerCase() === "codex";
+        const brand = isCodex ? "Codex" : (agent.kind || "Agent");
+
+        list.push({
           id: `agent-${agent.pid}`,
           pid: agent.pid,
-          brand: agent.kind || "Agent",
-          iconName: agent.kind === "Claude" ? "sparkle" : agent.kind === "Gemini" ? "gem" : "bot",
-          iconColor: agent.kind === "Claude" ? "#e06c45" : agent.kind === "Gemini" ? "#7c9bf8" : "#388bfd",
-          iconBg: agent.kind === "Claude" ? "#2a1814" : agent.kind === "Gemini" ? "#181e38" : "#142034",
-          title: agent.title || "交互式开发会话",
-          status: isRunning ? "running" : "idle",
-          statusLabel: isRunning ? "运行中" : "就绪/闲置",
-          statusColor: isRunning ? "#64d2ff" : "#8e8e93",
-          statusBg: isRunning ? "#102636" : "#1f2127",
-          statusBorder: isRunning ? "#1b4260" : "#2c2e36",
-          dotColor: isRunning ? "#64d2ff" : "#8e8e93",
-          file: agent.project || agent.cwd || "workspace",
-          model: agent.model || "default",
-          time: "刚刚",
-          actionType: isRunning ? "progress" : "idle",
-          progressLabel: isRunning ? "● 正在执行指令..." : "等待交互",
-          actionTime: "实时",
+          source: "codex_cli",
+          brand,
+          iconName: isCodex ? "bot" : "sparkle",
+          iconColor: isCodex ? "#388bfd" : "#64d2ff",
+          iconBg: isCodex ? "#142034" : "#102636",
+          title: agent.title || "终端交互式会话",
+          file: shortenPath(agent.cwd || "~"),
+          model: formatModelName(agent.model || "gpt-6.1-sol"),
+          time: "实时",
+          status: isWorking ? "running" : "idle",
+          statusLabel: isWorking ? "运行中" : "待命",
+          statusColor: isWorking ? "#30d158" : "#8e8e93",
+          statusBg: isWorking ? "#132a1c" : "#1f2127",
+          statusBorder: isWorking ? "#1e462d" : "#2c2e36",
+          dotColor: isWorking ? "#30d158" : "#8e8e93",
+          actionLabel: isWorking ? "● 执行中" : "就绪",
         });
       }
 
-      this.tasks = dynamicList.length > 0
-        ? [...dynamicList, ...presetTasks.slice(dynamicList.length)]
-        : presetTasks;
+      // 2. Real MAP Multi-AI Sessions
+      for (const s of mapSessions) {
+        const isRunning = s.status === "running";
+        const isCompleted = s.status === "completed" || s.status === "succeeded";
+        const isInterrupted = s.status === "interrupted";
+        const isFailed = s.status === "failed";
 
+        let brand = "MAP";
+        let iconName = "bot";
+        let iconColor = "#388bfd";
+        let iconBg = "#142034";
+
+        if (s.harness === "antigravity") {
+          brand = "MAP · Gemini";
+          iconName = "sparkle";
+          iconColor = "#7c9bf8";
+          iconBg = "#181e38";
+        } else if (s.harness === "codex") {
+          brand = "MAP · Codex";
+          iconName = "bot";
+          iconColor = "#388bfd";
+          iconBg = "#142034";
+        } else if (s.harness === "grok") {
+          brand = "MAP · Grok";
+          iconName = "zap";
+          iconColor = "#ff9f0a";
+          iconBg = "#2b1d0c";
+        }
+
+        const cleanTitle = (s.title || "未命名任务").replace(/^(antigravity|codex|grok)\s*·\s*/i, "").trim();
+
+        let statusLabel = "待命";
+        let statusColor = "#8e8e93";
+        let statusBg = "#1f2127";
+        let statusBorder = "#2c2e36";
+        let actionLabel = "就绪";
+
+        if (isRunning) {
+          statusLabel = "运行中";
+          statusColor = "#64d2ff";
+          statusBg = "#102636";
+          statusBorder = "#1b4260";
+          actionLabel = "● 正在执行中...";
+        } else if (isCompleted) {
+          statusLabel = "已完成";
+          statusColor = "#30d158";
+          statusBg = "#132a1c";
+          statusBorder = "#1e462d";
+          actionLabel = "✓ 本轮已完成";
+        } else if (isInterrupted) {
+          statusLabel = "已中断";
+          statusColor = "#ff9f0a";
+          statusBg = "#2b1d0c";
+          statusBorder = "#4d3215";
+          actionLabel = "已停止";
+        } else if (isFailed) {
+          statusLabel = "失败";
+          statusColor = "#ff453a";
+          statusBg = "#2a1515";
+          statusBorder = "#4a1e1e";
+          actionLabel = "执行失败";
+        }
+
+        list.push({
+          id: `map-${s.id}`,
+          sessionId: s.id,
+          source: "map",
+          brand,
+          iconName,
+          iconColor,
+          iconBg,
+          title: cleanTitle,
+          file: shortenPath(s.cwd),
+          model: formatModelName(s.model),
+          time: formatRelativeTime(s.updated_at || s.at),
+          status: s.status,
+          statusLabel,
+          statusColor,
+          statusBg,
+          statusBorder,
+          dotColor: statusColor,
+          actionLabel,
+        });
+      }
+
+      this.tasks = list;
       cx?.notify();
     };
 
@@ -174,12 +171,14 @@ export default class AiWorkbench extends View {
   }
 
   activity() {
+    const runningTasks = this.tasks.filter((t) => t.status === "running");
+    const count = runningTasks.length;
     return {
       width: 48,
       leading: row().gap(4).items_center()
         .child(icon("bot", 13).color("#388bfd"))
         .child(text("AI").text_size(9).font_bold().text_color("#388bfd")),
-      detail: text(`${this.tasks.length} 活跃智能体`).text_size(10).text_color("fg"),
+      detail: text(count > 0 ? `${count} 个任务运行中` : `${this.tasks.length} 活跃智能体`).text_size(10).text_color("fg"),
       priority: 8,
     };
   }
@@ -195,23 +194,14 @@ export default class AiWorkbench extends View {
       if (task.pid) {
         run("agents.focus", { pid: task.pid });
       } else {
-        // Activate Terminal or system editor
+        // Activate MAP app
         cx?.spawn(async () => {
-          await exec("/usr/bin/osascript", [
-            "-e",
-            'tell application "Terminal" to activate',
-          ]).catch(() => null);
+          await exec("/usr/bin/open", ["-b", MAP_BUNDLE]).catch(() => null);
         });
       }
     };
 
-    const handleGrantPermission = (task) => {
-      this.grantedPermissions.add(task.id);
-      cx?.notify();
-    };
-
     const renderCard = (task) => {
-      const isGranted = this.grantedPermissions.has(task.id);
       const isRunning = task.status === "running";
 
       // Left Brand Icon
@@ -242,45 +232,17 @@ export default class AiWorkbench extends View {
         .child(topLine)
         .child(subLine);
 
-      // Right Action / Status Area
-      let rightArea = row().gap(6).items_center().flex_none();
-
-      if (task.actionType === "jump_review") {
-        rightArea = row().gap(6).items_center().flex_none()
-          .child(
-            row().gap(3).items_center()
-              .child(icon("files", 10).color("#64d2ff"))
-              .child(text(task.actionLabel).text_size(8.5).font_medium().text_color("#d1d5db"))
-          )
-          .child(text(task.actionTime).text_size(7.5).text_color("#6e7681"))
-          .child(
-            row().h(20).px(8).rounded_full().bg("#0a84ff").items_center().justify_center().cursor_pointer()
-              .hover_bg("#2b96ff")
-              .on_click(() => handleFocus(task))
-              .child(text("跳转 ↗").text_size(8.5).font_bold().text_color("#ffffff"))
-          );
-      } else if (task.actionType === "permission") {
-        rightArea = row().gap(6).items_center().flex_none()
-          .child(
-            isGranted
-              ? row().h(18).px(6).rounded(4).bg("#132a1c").border(1, "#1e462d").items_center().gap(3)
-                  .child(icon("check", 9).color("#30d158"))
-                  .child(text("已授权").text_size(7.5).font_medium().text_color("#30d158"))
-              : row().h(20).px(8).rounded(5).bg("#ff9f0a22").border(1, "#ff9f0a55").items_center().justify_center().cursor_pointer()
-                  .hover_bg("#ff9f0a44")
-                  .on_click(() => handleGrantPermission(task))
-                  .child(icon("shield-check", 10).color("#ff9f0a"))
-                  .child(div().w(3))
-                  .child(text("授予终端权限").text_size(8).font_bold().text_color("#ff9f0a"))
-          )
-          .child(text(task.actionTime).text_size(7.5).text_color("#6e7681"))
-          .child(icon("chevron-right", 10).color("#6e7681"));
-      } else {
-        rightArea = row().gap(6).items_center().flex_none()
-          .child(text(task.progressLabel).text_size(8.5).font_medium().text_color("#d1d5db"))
-          .child(text(task.actionTime).text_size(7.5).text_color("#6e7681"))
-          .child(icon("chevron-right", 10).color("#6e7681"));
-      }
+      // Right Action Area
+      const rightArea = row().gap(6).items_center().flex_none()
+        .child(text(task.actionLabel).text_size(8.5).font_medium().text_color(isRunning ? "#64d2ff" : "#8e8e93"))
+        .child(
+          row().h(20).px(8).rounded_full().bg(isRunning ? "#0a84ff" : "#1f222b")
+            .border(1, isRunning ? "#2b96ff" : "#2d303b")
+            .items_center().justify_center().cursor_pointer()
+            .hover_bg(isRunning ? "#2b96ff" : "#282c38")
+            .on_click(() => handleFocus(task))
+            .child(text("跳转 ↗").text_size(8.5).font_bold().text_color(isRunning ? "#ffffff" : "#c5c8d2"))
+        );
 
       return row().id(`task-card/${task.id}`).w_full().h(52).px(10).py(6).rounded(10).clip()
         .bg("#14151a")
@@ -297,6 +259,16 @@ export default class AiWorkbench extends View {
         )
         .child(rightArea);
     };
+
+    if (this.tasks.length === 0) {
+      return col().id("ai-workbench-page").w(width).gap(6).px(4).py(10)
+        .child(
+          row().w_full().h(60).rounded(10).bg("#14151a").border(1, "#23252d")
+            .items_center().justify_center().gap(6)
+            .child(icon("bot", 16).color("#8e8e93"))
+            .child(text("暂无进行中的 AI 会话 · 请在 MAP 或 Codex 中开启新对话").text_size(9.5).text_color("#8e8e93"))
+        );
+    }
 
     return col().id("ai-workbench-page").w(width).gap(6).px(4).py(6)
       .children(this.tasks.map(renderCard));

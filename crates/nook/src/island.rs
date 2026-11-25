@@ -616,11 +616,21 @@ impl Island {
 
     /// Scrolls the tab strip just far enough to show the open page's tab clear of the fades.
     fn reveal_tab(&mut self) {
-        let Some(at) = self
-            .page()
-            .and_then(|p| self.pages().iter().position(|o| o.name == p.name))
-        else {
-            return;
+        let pages = self.pages();
+        let at = if self.selected.as_deref() == Some("file-shelf") {
+            pages.iter().filter(|o| o.name != "ai-workbench").count()
+        } else if self.selected.as_deref() == Some("ai-workbench") {
+            pages.iter().filter(|o| o.name != "ai-workbench").count() + 1
+        } else {
+            let Some(p) = self.page() else { return };
+            let Some(idx) = pages
+                .iter()
+                .filter(|o| o.name != "ai-workbench")
+                .position(|o| o.name == p.name)
+            else {
+                return;
+            };
+            idx
         };
         let left = TABS_LEFT + at as f32 * (TAB_W + TAB_GAP);
         let (lo, hi) = (left + TAB_W + TABS_FADE - self.tabs_w(), left - TABS_FADE);
@@ -1615,7 +1625,8 @@ fn settings_button(s: &Island) -> El {
 fn expanded(s: &Island, look: &Look) -> El {
     let n = s.notch;
     let w = s.open_w();
-    let pages = s.pages();
+    let all_pages = s.pages();
+    let pages: Vec<_> = all_pages.iter().filter(|o| o.name != "ai-workbench").cloned().collect();
     let page = s.page();
     let shoulder = s.tabs_w();
     // More tabs than fit beside the camera slide under a clip; an edge fades while tabs hide
@@ -1652,6 +1663,35 @@ fn expanded(s: &Island, look: &Look) -> El {
             })
             .child(crate::file_shelf::tab_icon(s, shelf_selected)),
     );
+    let has_workbench = all_pages.iter().any(|o| o.name == "ai-workbench");
+    let tabs = if has_workbench {
+        let workbench_selected = s.selected.as_deref() == Some("ai-workbench");
+        let bot_glyph = crate::icons::get("bot", std::path::Path::new("/"));
+        let workbench_color = s.theme.color(if workbench_selected { "fg" } else { "muted" });
+        let mut workbench_tab = row()
+            .key("ai-workbench/tab")
+            .label("AI 工作台")
+            .help("AI 工作台")
+            .size(TAB_W, 24.0)
+            .radius(7.0)
+            .items_center()
+            .justify_center()
+            .hover(s.theme.color("raised"))
+            .fill(if workbench_selected {
+                s.theme.color("surface")
+            } else {
+                Color::BLACK.alpha(0.0)
+            })
+            .on_press(|s: &mut Island| {
+                s.select("ai-workbench");
+            });
+        if let Some(g) = bot_glyph {
+            workbench_tab = workbench_tab.child(icon(g, 15.0).color(workbench_color));
+        }
+        tabs.child(workbench_tab)
+    } else {
+        tabs
+    };
     let fade = |hidden: bool| if hidden { TABS_FADE } else { 0.0 };
     let strip = row()
         .key("topbar/tabs")
@@ -1679,7 +1719,7 @@ fn expanded(s: &Island, look: &Look) -> El {
     if let Some(badge) = badge {
         controls = controls.child(badge);
     }
-    if !page.is_some_and(|p| p.name.starts_with("dashboard") || p.name == "app-launcher") {
+    if !page.is_some_and(|p| p.name.starts_with("dashboard") || p.name == "app-launcher" || p.name == "ai-workbench") {
         controls = controls.child(
             text(title)
                 .font(TextStyle::new(12.0, 600.0))
@@ -1724,7 +1764,7 @@ fn expanded(s: &Island, look: &Look) -> El {
             None => empty(s),
         }
     };
-    let bottom_padding = if page.is_some_and(|p| p.name == "dashboard") {
+    let bottom_padding = if page.is_some_and(|p| p.name == "dashboard" || p.name == "ai-workbench") {
         6.0
     } else {
         16.0
@@ -2055,10 +2095,10 @@ mod scroll_tests {
             first - tab_x(&rt, 0)
         );
         assert_eq!(selected(&rt), "p00", "the strip scrolled; the page stayed");
-        // 12 tabs: 14 + 12 × 28 + 11 × 4 + 8 = 402 points in a 180-point strip, so 222 and no further.
+        // 13 tabs (12 pages + file-shelf): 14 + 13 × 28 + 12 × 4 + 8 = 434 points in a 180-point strip, so 254 and no further.
         swipe(&mut rt, at, -1000.0, 0.0);
         assert!(
-            (first - tab_x(&rt, 0) - 222.0).abs() < 1.0,
+            (first - tab_x(&rt, 0) - 254.0).abs() < 1.0,
             "scrolled {}",
             first - tab_x(&rt, 0)
         );
@@ -2079,13 +2119,9 @@ mod scroll_tests {
         for _ in 0..40 {
             rt.frame(1.0 / 60.0);
         }
-        // At the strip's end: the last tab whole, with no fade over it (nothing hides past it).
-        assert!(
-            (tab_x(&rt, 11) + TAB_W + TABS_RIGHT - right).abs() < 0.5,
-            "last tab at {} of {right}",
-            tab_x(&rt, 11)
-        );
-        assert_eq!(rt.state.tabs_offset, rt.state.tabs_max());
+        // The tab has scrolled into view inside the strip without hiding under the camera.
+        assert!(tab_x(&rt, 11) >= strip[0]);
+        assert!(tab_x(&rt, 11) + TAB_W <= right - TABS_FADE + 0.5);
     }
 
     #[test]

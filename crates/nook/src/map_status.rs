@@ -26,7 +26,7 @@ pub fn read(started: Option<u64>, now: u64) -> Value {
         .join("monocode.db");
     read_store(&path, started, now).unwrap_or_else(|_| {
         if started.is_some() {
-            json!({ "running": true, "models": [], "completions": [] })
+            json!({ "running": true, "models": [], "completions": [], "sessions": [] })
         } else {
             Value::Null
         }
@@ -102,5 +102,66 @@ fn read_store(path: &Path, started: Option<u64>, now: u64) -> rusqlite::Result<V
             )
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({ "running": started.is_some(), "models": models, "completions": completions }))
+
+    let sql_sessions = "
+        SELECT 
+            s.id,
+            s.harness,
+            s.model,
+            s.title,
+            s.cwd,
+            s.updated_at,
+            e.event_type,
+            e.created_at,
+            CASE WHEN json_valid(e.payload_json) THEN json_extract(e.payload_json, '$.outcome') END
+        FROM sessions s
+        LEFT JOIN session_events e ON e.session_id = s.id AND e.sequence = (
+            SELECT sequence FROM session_events WHERE session_id = s.id
+            AND event_type IN ('turn.started', 'turn.ended')
+            ORDER BY sequence DESC LIMIT 1
+        )
+        WHERE s.archived = 0 AND s.is_draft = 0
+        ORDER BY s.updated_at DESC
+        LIMIT 10";
+    let mut query = db.prepare(sql_sessions)?;
+    let sessions = query
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let harness: String = row.get(1)?;
+            let model_raw: String = row.get(2)?;
+            let title: String = row.get(3)?;
+            let cwd: String = row.get(4)?;
+            let updated_at: u64 = row.get(5)?;
+            let kind: Option<String> = row.get(6)?;
+            let at = row.get::<_, Option<u64>>(7)?.unwrap_or_default();
+            let outcome: Option<String> = row.get(8)?;
+
+            let state = match kind.as_deref() {
+                Some("turn.started") if started.is_some_and(|launch| at >= launch) => "running",
+                Some("turn.ended") => match outcome.as_deref() {
+                    Some("completed") => "completed",
+                    Some("failed") => "failed",
+                    Some("cancelled") => "interrupted",
+                    _ => resting,
+                },
+                _ => resting,
+            };
+
+            let model = model_raw.split(':').nth(1).unwrap_or(&model_raw).to_string();
+
+            Ok(json!({
+                "id": id,
+                "harness": harness,
+                "model": model,
+                "title": title,
+                "cwd": cwd,
+                "updated_at": updated_at,
+                "status": state,
+                "at": at,
+                "outcome": outcome,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(json!({ "running": started.is_some(), "models": models, "completions": completions, "sessions": sessions }))
 }
