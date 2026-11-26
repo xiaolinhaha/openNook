@@ -93,10 +93,12 @@ stop).
 cargo run -p nook --release              # the island
 cargo run -p nook -- check <mod folder>  # load a mod, report its views or its error
 cargo run -p nook -- shot island.png     # render the island to a PNG (--open, --mod <name>)
-./scripts/bundle.sh                      # target/openNook.app
+./scripts/bundle.sh                      # target/openNook.zip
 ./scripts/installer.sh                   # target/openNook-<version>.dmg
 ./scripts/screens.sh                     # re-render assets/screens
 ```
+
+Unzip `target/openNook.zip`, move `openNook.app` into `/Applications`, and open it from there.
 
 Now Playing uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) on
 macOS 15.4+: `./scripts/build-mediaremote-adapter.sh` builds it into `third_party/`.

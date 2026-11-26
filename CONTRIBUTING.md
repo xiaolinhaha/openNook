@@ -16,7 +16,7 @@ cargo test --workspace --no-fail-fast
 
 Before opening a PR, run `cargo fmt` and `cargo clippy --workspace --all-targets`.
 
-Permission-gated features need a real app bundle because macOS TCC attaches grants to a bundle identifier. Build one with `./scripts/bundle.sh` (`./scripts/installer.sh` wraps it in a DMG).
+Permission-gated features need a real app bundle because macOS TCC attaches grants to a bundle identifier. Run `./scripts/bundle.sh`, unzip `target/openNook.zip`, and move the app to `/Applications`. For a DMG, run `./scripts/installer.sh`.
 
 ## Layout and design
 

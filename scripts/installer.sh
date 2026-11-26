@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Release .app + drag-to-Applications DMG.
+# Release ZIP + drag-to-Applications DMG.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -10,18 +10,15 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 DMG="$ROOT/target/openNook-${VERSION}.dmg"
-STAGE="$ROOT/target/dmg"
 
 "$ROOT/scripts/bundle.sh" release
-
-APP="$ROOT/target/openNook.app"
 
 echo "After copying openNook.app to /Applications, put the CLI on PATH:"
 echo "  ln -sf /Applications/openNook.app/Contents/MacOS/openNook ~/.local/bin/opennook"
 
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/openNook.app"
+STAGE="$(mktemp -d "$ROOT/target/.opennook-dmg.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+ditto -x -k "$ROOT/target/openNook.zip" "$STAGE"
 ln -s /Applications "$STAGE/Applications"
 
 hdiutil create \
@@ -30,8 +27,6 @@ hdiutil create \
   -ov \
   -format UDZO \
   "$DMG"
-
-rm -rf "$STAGE"
 
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
   IDENTITY="$(security find-identity -v -p codesigning | awk -F'\"' '/Developer ID Application/{print $2; exit}')"

@@ -16,13 +16,16 @@ else
   BIN="$ROOT/target/debug/opennook"
 fi
 
-APP="$ROOT/target/openNook.app"
+mkdir -p "$ROOT/target"
+STAGE="$(mktemp -d "$ROOT/target/.opennook-bundle.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+APP="$STAGE/openNook.app"
+ARCHIVE="$ROOT/target/openNook.zip"
 ENTITLEMENTS="$ROOT/resources/openNook.entitlements"
-rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 if [[ -f "$ROOT/resources/icon.png" ]]; then
-  ICONSET="$(mktemp -d)/icon.iconset"
+  ICONSET="$STAGE/icon.iconset"
   mkdir -p "$ICONSET"
   for px in 16 32 128 256 512; do
     sips -z "$px" "$px" "$ROOT/resources/icon.png" --out "$ICONSET/icon_${px}x${px}.png" >/dev/null
@@ -37,12 +40,6 @@ chmod +x "$APP/Contents/MacOS/openNook"
 
 # The same binary is the CLI (`opennook check`, `opennook shot`); link it onto PATH with
 #   ln -s "/Applications/openNook.app/Contents/MacOS/openNook" ~/.local/bin/opennook
-
-# Dev `cargo run` never receives opennook:// — register the bundle.
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [[ -x "$LSREGISTER" ]]; then
-  "$LSREGISTER" -f "$APP" || true
-fi
 
 # Bundle mediaremote-adapter (not linked; /usr/bin/perl loads the framework).
 if "$ROOT/scripts/build-mediaremote-adapter.sh"; then
@@ -78,10 +75,12 @@ else
 fi
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-  ditto -c -k --keepParent "$APP" "$ROOT/target/openNook-notary.zip"
-  xcrun notarytool submit "$ROOT/target/openNook-notary.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+  ditto -c -k --keepParent "$APP" "$STAGE/openNook-notary.zip"
+  xcrun notarytool submit "$STAGE/openNook-notary.zip" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$APP"
 fi
 
-echo "built $APP"
-echo "run: open \"$APP\""
+# An unpacked build can appear next to the installed app in Spotlight.
+ditto -c -k --keepParent "$APP" "$STAGE/openNook.zip"
+mv -f "$STAGE/openNook.zip" "$ARCHIVE"
+echo "built $ARCHIVE"
