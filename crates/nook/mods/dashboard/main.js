@@ -109,7 +109,8 @@ const STYLE_KEYS = ["classic", "dark", "vinyl", "klein", "macaron", "muted", "so
 const ALL_WIDGET_DEFS = {
   "codex": { id: "codex", name: "Codex AI", icon: "bot", desc: "AI 状态与 5h 单额度监控", row: "top" },
   "map": { id: "map", name: "MAP", icon: "bot", desc: "GPT 与 Gemini 的实时任务状态", row: "top" },
-  "clock": { id: "clock", name: "时钟与热力", icon: "clock", desc: "大字号数字时钟、实时天气与双周活跃热力图", row: "top" },
+  "clock": { id: "clock", name: "时钟与天气", icon: "clock", desc: "大字号数字时钟与实时高低温度天气", row: "top" },
+  "calendar": { id: "calendar", name: "月历与周数", icon: "calendar", desc: "当月日历视图、周数徽标与今日高亮标记", row: "top" },
   "soda-music": { id: "soda-music", name: "汽水音乐", icon: "music", desc: "汽水音乐专属高颜值青柠播放器", row: "top" },
   "music": { id: "music", name: "系统音乐", icon: "music", desc: "Apple Music 原生播放器", row: "top" },
   "network": { id: "network", name: "实时网速", icon: "wifi", desc: "上下行实时传输速率与流量监控", row: "bottom" },
@@ -117,6 +118,13 @@ const ALL_WIDGET_DEFS = {
   "battery": { id: "battery", name: "电池续航", icon: "battery-charging", desc: "剩余电量与充电状态监控", row: "bottom" },
   "launchers": { id: "launchers", name: "快捷启动", icon: "layout-grid", desc: "原生 1:1 独立 Squircle 快捷启动栏", row: "bottom" },
 };
+
+function getWeekNumber(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
 
 function replaceClipboard(ids) {
   return [...new Set(ids.map((id) => id === "clipboard" ? "map" : id))];
@@ -160,17 +168,26 @@ export default class Dashboard extends View {
     this.pickerOpen = false;
     this.pickerRow = "top";
 
-    const defaultTop = ["codex", "map", "clock"];
+    const defaultTop = ["codex", "map", "clock", "calendar"];
     const defaultBottom = ["network", "rings", "battery", "launchers"];
     const defaultPool = ["soda-music", "music"];
 
     try {
-      const saved = localStorage.getItem("dashboard_widgets_v4");
+      const saved = localStorage.getItem("dashboard_widgets_v5") || localStorage.getItem("dashboard_widgets_v4");
       if (saved) {
         const parsed = JSON.parse(saved);
-        this.topWidgets = Array.isArray(parsed.top) ? replaceClipboard(parsed.top) : defaultTop.slice();
-        this.bottomWidgets = Array.isArray(parsed.bottom) ? replaceClipboard(parsed.bottom) : defaultBottom.slice();
-        this.poolWidgets = Array.isArray(parsed.pool) ? replaceClipboard(parsed.pool) : defaultPool.slice();
+        let top = Array.isArray(parsed.top) ? replaceClipboard(parsed.top) : defaultTop.slice();
+        let bottom = Array.isArray(parsed.bottom) ? replaceClipboard(parsed.bottom) : defaultBottom.slice();
+        let pool = Array.isArray(parsed.pool) ? replaceClipboard(parsed.pool) : defaultPool.slice();
+        if (!top.includes("calendar") && !bottom.includes("calendar")) {
+          const clockIdx = top.indexOf("clock");
+          if (clockIdx !== -1) top.splice(clockIdx + 1, 0, "calendar");
+          else top.push("calendar");
+          pool = pool.filter((w) => w !== "calendar");
+        }
+        this.topWidgets = top;
+        this.bottomWidgets = bottom;
+        this.poolWidgets = pool;
       } else {
         this.topWidgets = defaultTop.slice();
         this.bottomWidgets = defaultBottom.slice();
@@ -186,6 +203,7 @@ export default class Dashboard extends View {
       "codex": "classic",
       "map": "classic",
       "clock": "classic",
+      "calendar": "classic",
       "network": "classic",
       "rings": "classic",
       "battery": "classic",
@@ -195,8 +213,9 @@ export default class Dashboard extends View {
     };
 
     try {
-      const savedStyles = localStorage.getItem("dashboard_widget_styles_v4");
+      const savedStyles = localStorage.getItem("dashboard_widget_styles_v5") || localStorage.getItem("dashboard_widget_styles_v4");
       this.widgetStyles = savedStyles ? migrateWidgetStyles(JSON.parse(savedStyles)) : defaultStyles;
+      if (!this.widgetStyles.calendar) this.widgetStyles.calendar = "classic";
     } catch {
       this.widgetStyles = defaultStyles;
     }
@@ -209,6 +228,11 @@ export default class Dashboard extends View {
       const remaining = new Set(replaceClipboard(active).filter((id) => Object.hasOwn(ALL_WIDGET_DEFS, id)));
       const [top, bottom] = props.widgetRows.map((ids) => replaceClipboard(ids).filter((id) => remaining.delete(id)));
       for (const id of remaining) (ALL_WIDGET_DEFS[id].row === "top" ? top : bottom).push(id);
+      if (!top.includes("calendar") && !bottom.includes("calendar")) {
+        const clockIdx = top.indexOf("clock");
+        if (clockIdx !== -1) top.splice(clockIdx + 1, 0, "calendar");
+        else top.push("calendar");
+      }
       this.topWidgets = top;
       this.bottomWidgets = bottom;
       const visible = new Set([...top, ...bottom]);
@@ -216,6 +240,7 @@ export default class Dashboard extends View {
     } else if (Array.isArray(props?.activeWidgets) && props.activeWidgets.length) {
       const topValid = replaceClipboard(props.activeWidgets).filter((id) => ALL_WIDGET_DEFS[id]?.row === "top");
       let botValid = props.activeWidgets.filter((id) => ["network", "rings", "battery", "launchers"].includes(id));
+      if (!topValid.includes("calendar")) topValid.push("calendar");
       if (!botValid.includes("network")) botValid.unshift("network");
       if (!botValid.includes("rings")) botValid.splice(1, 0, "rings");
       if (!botValid.includes("battery")) botValid.splice(2, 0, "battery");
@@ -226,12 +251,12 @@ export default class Dashboard extends View {
 
     this.saveAll = () => {
       try {
-        localStorage.setItem("dashboard_widgets_v4", JSON.stringify({
+        localStorage.setItem("dashboard_widgets_v5", JSON.stringify({
           top: this.topWidgets,
           bottom: this.bottomWidgets,
           pool: this.poolWidgets,
         }));
-        localStorage.setItem("dashboard_widget_styles_v4", JSON.stringify(this.widgetStyles));
+        localStorage.setItem("dashboard_widget_styles_v5", JSON.stringify(this.widgetStyles));
       } catch {}
     };
 
@@ -529,22 +554,25 @@ export default class Dashboard extends View {
 
     const width = island()?.page?.width ?? 528;
     const innerW = width - 20; // accounting for px(10) left/right
-    const totalGap = 7;
+    const totalGap = 5;
     const topH = 96;
     const bottomH = 84;
     const isEdit = this.editing;
 
     // Dynamic Skin Applicator
-    const applySkin = (el, id, w, h, radius = 12, isBottom = false) => {
+    const applySkin = (el, id, w, h, radius = 10, isBottom = false) => {
       const skinKey = this.widgetStyles[id] || "classic";
       const s = STYLES[skinKey] || STYLES.classic;
-      const shadowBlur = isBottom ? 6 : s.shadow[1];
-      const shadowSpread = isBottom ? 2 : s.shadow[0];
-      return el.id(id).w(w).h(h).px(8).py(7).rounded(radius).clip()
+      const shadowBlur = isBottom ? 5 : s.shadow[1];
+      const shadowSpread = isBottom ? 1 : s.shadow[0];
+      const isNetClassic = id === "network" && (skinKey === "classic" || skinKey === "glass");
+      const border = isNetClassic ? "#af52de" : s.border;
+      const shadowColor = isNetClassic ? "#af52de33" : s.shadow[2];
+      return el.id(id).w(w).h(h).px(6).py(5).rounded(radius).clip()
         .bg(s.botGrad)
         .gradient(s.topGrad, s.botGrad)
-        .border(1, s.border)
-        .shadow(shadowSpread, shadowBlur, s.shadow[2]);
+        .border(isNetClassic ? 1.5 : 1, border)
+        .shadow(shadowSpread, shadowBlur, shadowColor);
     };
 
     // Delete Button Overlay for Edit Mode
@@ -630,7 +658,7 @@ export default class Dashboard extends View {
     // 1. Soda Music Widget
     const buildSodaMusic = (w) => {
       const isSodaRunning = appRunning("com.soda.music");
-      return applySkin(col(), "soda-music", w, topH, 12, false).justify_between()
+      return applySkin(col(), "soda-music", w, topH, 10, false).justify_between()
         .child(row().w_full().justify_between().items_center()
           .child(row().gap(3).items_center().cursor_pointer()
             .on_click(() => open("/Applications/汽水音乐.app"))
@@ -641,17 +669,17 @@ export default class Dashboard extends View {
             .child(div().w(2))
             .child(text(isSodaRunning ? "已启动" : "打开").text_size(6.5).font_semibold().text_color(isSodaRunning ? "#00f57a" : "#8e8e93")))))
         .child(col().items_center().gap(1).w_full()
-          .child(text(songTitle).text_size(10).font_bold().truncate().text_color("#ffffff"))
+          .child(text(songTitle).text_size(9.5).font_bold().truncate().text_color("#ffffff"))
           .child(text(artistName).text_size(7.5).text_color("#8e8e93").truncate()))
-        .child(row().w_full().items_center().justify_center().gap(8)
+        .child(row().w_full().items_center().justify_center().gap(6)
           .child(row().size(15).items_center().justify_center().cursor_pointer()
             .hover_bg("#22242a").rounded_full()
             .on_click(() => run("media.previous"))
             .child(icon("skip-back-fill", 9).color("#8e8e93")))
-          .child(row().size(20).rounded_full().bg("#00f57a").items_center().justify_center().cursor_pointer()
+          .child(row().size(18).rounded_full().bg("#00f57a").items_center().justify_center().cursor_pointer()
             .hover_bg("#2bf68c")
             .on_click(() => run("media.toggle"))
-            .child(icon(isPlaying ? "pause-fill" : "play-fill", 9).color("#000000")))
+            .child(icon(isPlaying ? "pause-fill" : "play-fill", 8.5).color("#000000")))
           .child(row().size(15).items_center().justify_center().cursor_pointer()
             .hover_bg("#22242a").rounded_full()
             .on_click(() => run("media.next"))
@@ -659,19 +687,19 @@ export default class Dashboard extends View {
     };
 
     // 2. Apple Music Widget
-    const buildMusic = (w) => applySkin(col(), "music", w, topH, 12, false).justify_between()
-      .child(row().w_full().items_center().child(icon("music", 14).color("#8e8e93")))
+    const buildMusic = (w) => applySkin(col(), "music", w, topH, 10, false).justify_between()
+      .child(row().w_full().items_center().child(icon("music", 12).color("#8e8e93")))
       .child(col().items_center().gap(1).w_full()
-        .child(text(songTitle).text_size(10).font_bold().truncate().text_color("#ffffff"))
+        .child(text(songTitle).text_size(9.5).font_bold().truncate().text_color("#ffffff"))
         .child(text(artistName).text_size(7.5).text_color("#8e8e93").truncate()))
-      .child(row().w_full().items_center().justify_center().gap(8)
+      .child(row().w_full().items_center().justify_center().gap(6)
         .child(row().size(15).items_center().justify_center().cursor_pointer()
           .hover_bg("#22242a").rounded_full()
           .on_click(() => run("media.previous"))
           .child(icon("skip-back-fill", 9).color("#8e8e93")))
-        .child(row().size(20).rounded_full().bg("#ff3b30").items_center().justify_center().cursor_pointer()
+        .child(row().size(18).rounded_full().bg("#ff3b30").items_center().justify_center().cursor_pointer()
           .on_click(() => run("media.toggle"))
-          .child(icon(isPlaying ? "pause-fill" : "play-fill", 9).color("#ffffff")))
+          .child(icon(isPlaying ? "pause-fill" : "play-fill", 8.5).color("#ffffff")))
         .child(row().size(15).items_center().justify_center().cursor_pointer()
           .hover_bg("#22242a").rounded_full()
           .on_click(() => run("media.next"))
@@ -679,58 +707,58 @@ export default class Dashboard extends View {
 
     // 3. Codex Card (Refined to match screenshot)
     const fiveRemaining = fiveHour === null ? null : Math.round(fiveHour.remaining);
-    const codexPct = fiveRemaining ?? 37;
-    const currentCodexModel = model ? displayModel(model) : "GPT-6.2 Sol";
+    const codexPct = fiveRemaining ?? 100;
+    const currentCodexModel = model ? displayModel(model) : "GPT 6.2 Sol";
 
     const buildCodex = (w) => {
-      const trackW = w - 16;
+      const trackW = w - 12;
       const isRunning = phase === "running";
       const isFailed = phase === "failed";
-      const statusLabel = isRunning ? "运行中" : isFailed ? "失败" : "已完成";
+      const statusLabel = isRunning ? "运行中" : isFailed ? "失败" : "空闲";
       const statusColor = isRunning ? "#64d2ff" : isFailed ? "#ff453a" : "#30d158";
       const statusBg = isRunning ? "#102636" : isFailed ? "#331818" : "#132a1c";
       const statusBorder = isRunning ? "#1b4260" : isFailed ? "#592424" : "#1e462d";
 
-      return applySkin(col(), "codex", w, topH, 12, false).justify_between()
+      return applySkin(col(), "codex", w, topH, 10, false).justify_between()
         .when(!!session && !isEdit, (b) => b.cursor_pointer().on_click(() => run("agents.focus", { pid: session.pid })))
         .child(
           // Row 1: Header
           row().w_full().justify_between().items_center()
             .child(
-              row().gap(4).items_center()
+              row().gap(3).items_center()
                 .child(
-                  row().size(18).rounded(5).bg("#1a2233").items_center().justify_center()
-                    .child(icon("bot", 11).color("#388bfd"))
+                  row().size(16).rounded(4).bg("#1a2233").items_center().justify_center()
+                    .child(icon("bot", 10).color("#388bfd"))
                 )
-                .child(text("Codex").text_size(10.5).font_bold().text_color("#ffffff"))
+                .child(text("Codex").text_size(9.5).font_bold().text_color("#ffffff"))
             )
             .child(
-              row().h(15).px(5).gap(3).items_center().rounded(4)
+              row().h(14).px(4).gap(2).items_center().rounded_full()
                 .bg(statusBg).border(1, statusBorder)
-                .child(div().size(3.5).rounded_full().bg(statusColor).when(isRunning, (d) => d.pulse(1.1)))
-                .child(text(statusLabel).text_size(7.5).font_medium().text_color(statusColor))
+                .child(div().size(3).rounded_full().bg(statusColor).when(isRunning, (d) => d.pulse(1.1)))
+                .child(text(statusLabel).text_size(7).font_medium().text_color(statusColor))
             )
         )
         .child(
           // Row 2: Model & Quota Info
           row().w_full().justify_between().items_center()
-            .child(text(currentCodexModel).text_size(9).font_medium().text_color("#d1d5db").truncate())
+            .child(text(currentCodexModel).text_size(9).font_bold().text_color("#ffffff").truncate())
             .child(
-              row().gap(3).items_center()
-                .child(text("5h 额度").text_size(8).text_color("#8e8e93"))
-                .child(text(`${codexPct}%`).text_size(9).font_bold().text_color("#0a84ff").tabular_nums())
+              row().gap(2).items_center()
+                .child(text("5h 额度").text_size(7).text_color("#8e8e93"))
+                .child(text(`${codexPct}%`).text_size(8.5).font_bold().text_color("#30d158").tabular_nums())
             )
         )
         .child(
-          // Row 3: Blue Progress Bar
-          row().w_full().h(3.5).rounded_full().bg("#22242c").clip()
-            .child(div().h(3.5).w(Math.max(2, trackW * (codexPct / 100))).rounded_full().bg("#0a84ff"))
+          // Row 3: Bright Green Progress Bar
+          row().w_full().h(3).rounded_full().bg("#22242c").clip()
+            .child(div().h(3).w(Math.max(2, trackW * (codexPct / 100))).rounded_full().bg("#30d158"))
         )
         .child(
           // Row 4: Reset & Chevron
           row().w_full().justify_between().items_center()
-            .child(text(fiveHour ? relativeReset(fiveHour.resetsAt) : "3 小时后重置").text_size(8).text_color("#8e8e93"))
-            .child(icon("chevron-right", 9).color("#6e7681"))
+            .child(text(fiveHour ? relativeReset(fiveHour.resetsAt) : "2 小时后重置").text_size(7.5).text_color("#8e8e93"))
+            .child(icon("chevron-right", 8).color("#6e7681"))
         );
     };
 
@@ -738,8 +766,8 @@ export default class Dashboard extends View {
     const buildMap = (w) => {
       const state = mapStatus();
       const modelsData = [
-        { defaultName: "GPT 6.1 Sol", family: "GPT" },
-        { defaultName: "Gemini 3.8 Flash High", family: "Gemini" },
+        { defaultName: "GPT 6 Sol", family: "GPT" },
+        { defaultName: "Gemini 4 Hydrogen Medium", family: "Gemini" },
       ];
 
       const modelRows = modelsData.map(({ defaultName, family }) => {
@@ -751,18 +779,17 @@ export default class Dashboard extends View {
         const statusLabel = isRunning ? "运行中" : isSucceeded ? "已完成" : "空闲";
         const statusColor = isRunning ? "#64d2ff" : "#30d158";
 
-        return row().id(`map-model/${family}`).w_full().h(20).px(6).rounded(5).bg("#181920").justify_between().items_center()
-          .child(text(name).text_size(8.5).font_medium().text_color("#d1d5db").truncate())
+        return row().id(`map-model/${family}`).w_full().h(23).px(5).rounded(5)
+          .bg("#16171d").border(1, "#23252d").justify_between().items_center()
+          .child(text(name).text_size(7.5).font_medium().text_color("#ffffff").truncate())
           .child(
-            row().gap(3).items_center()
-              .child(div().size(3.5).rounded_full().bg(statusColor).when(isRunning, (d) => d.pulse(1.1)))
-              .child(text(statusLabel).text_size(7.5).font_medium().text_color(statusColor))
+            row().gap(2).items_center()
+              .child(div().size(3).rounded_full().bg(statusColor).when(isRunning, (d) => d.pulse(1.1)))
+              .child(text(statusLabel).text_size(7).font_medium().text_color(statusColor))
           );
       });
 
-      const onlineCount = state?.models?.filter((m) => m.status !== "offline")?.length || 2;
-
-      return applySkin(col(), "map", w, topH, 12, false).justify_between()
+      return applySkin(col(), "map", w, topH, 10, false).justify_between()
         .when(!isEdit, (card) => card.cursor_pointer().on_click((_, cx) => {
           cx.spawn(async () => { await exec("/usr/bin/open", ["-b", MAP_BUNDLE]); });
         }))
@@ -770,131 +797,151 @@ export default class Dashboard extends View {
           // Row 1: Header
           row().w_full().justify_between().items_center()
             .child(
-              row().gap(3).items_center()
-                .child(text("MAP").text_size(10.5).font_bold().text_color("#ffffff"))
-                .child(div().size(4).rounded_full().bg("#30d158"))
+              row().gap(2).items_center()
+                .child(text("MAP").text_size(9.5).font_bold().text_color("#ffffff"))
+                .child(div().size(3.5).rounded_full().bg("#30d158"))
             )
-            .child(icon("chevron-right", 9).color("#6e7681"))
+            .child(icon("chevron-right", 8).color("#6e7681"))
         )
         .child(
           // Rows: 2 Model Items
-          col().w_full().gap(3).children(modelRows)
-        )
-        .child(
-          // Row 4: Footer
-          row().w_full().justify_between().items_center()
-            .child(text("多模型调度池").text_size(8).text_color("#8e8e93"))
-            .child(text(`${onlineCount} 在线`).text_size(8).text_color("#8e8e93"))
+          col().w_full().gap(4).children(modelRows)
         );
     };
 
-    // 5. Clock, Weather & 14-Day Activity Heatmap Card
+    // 5. Digital Clock & Weather Card
     const buildClock = (w) => {
       const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
       const weekdayZh = weekdays[now.getDay()];
-      const leftWidth = Math.min(130, Math.floor(w * 0.44));
+      const hours = String(now.getHours()).padStart(2, "0");
+      const minutes = String(now.getMinutes()).padStart(2, "0");
 
-      // Left Column: Big Time & Weather
-      const leftCol = col().w(leftWidth).h_full().justify_between()
+      return applySkin(col(), "clock", w, topH, 10, false).justify_between()
         .child(
-          row().gap(5).items_end()
-            .child(text(clock).text_size(21).font_bold().text_color("#ffffff").tabular_nums())
-            .child(text(weekdayZh).text_size(10).font_medium().text_color("#8e8e93"))
+          // Big Digital Clock
+          row().w_full().items_end().gap(2)
+            .child(
+              row().items_end().gap(1)
+                .child(text(`${hours}:`).text_size(21).font_bold().text_color("#ffffff").tabular_nums())
+                .child(text(minutes).text_size(21).font_bold().text_color("#ff9f0a").tabular_nums())
+            )
+            .child(text(weekdayZh).text_size(9.5).font_medium().text_color("#8e8e93").pb(2))
         )
         .child(
-          row().gap(3).items_center()
-            .child(icon(weatherIcon, 9).color("#64d2ff"))
-            .child(text(weatherDesc).text_size(8.5).font_medium().text_color("#d1d5db"))
+          // Weather Row
+          row().w_full().gap(2).items_center()
+            .child(icon(weatherIcon, 10).color("#64d2ff"))
+            .child(text(weatherDesc).text_size(8).font_medium().text_color("#ffffff"))
             .child(text("|").text_size(7).text_color("#3a3d45"))
-            .child(text("▼").text_size(6.5).font_bold().text_color("#64d2ff"))
-            .child(text(weatherLow).text_size(8).font_semibold().text_color("#64d2ff").tabular_nums())
-            .child(text("▲").text_size(6.5).font_bold().text_color("#ff9f0a"))
+            .child(text("▼").text_size(6).font_bold().text_color("#0a84ff"))
+            .child(text(weatherLow).text_size(8).font_semibold().text_color("#0a84ff").tabular_nums())
+            .child(text("▲").text_size(6).font_bold().text_color("#ff9f0a"))
             .child(text(weatherHigh).text_size(8).font_semibold().text_color("#ff9f0a").tabular_nums())
-        )
-        .child(
-          text(`空气质量优 28 · 湿度 ${humidity}%`).text_size(7.5).text_color("#717684")
         );
+    };
 
-      // Right Column: 14-Day Activity Heatmap
-      const todayDayOfWeek = now.getDay(); // 0 = Sun, 3 = Wed, 6 = Sat
-      const weekLabels = ["S", "M", "T", "W", "T", "F", "S"];
+    // 6. Calendar Widget
+    const buildCalendar = (w) => {
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      const todayDate = now.getDate();
+      const todayDayOfWeek = now.getDay();
+      const weekNum = getWeekNumber(now);
 
-      const weekdayHeaders = row().w_full().justify_between().items_center().px(2)
+      const weekLabels = ["日", "一", "二", "三", "四", "五", "六"];
+      const firstDay = new Date(year, month, 1).getDay();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+      const cells = [];
+      for (let i = firstDay - 1; i >= 0; i--) {
+        cells.push({ day: daysInPrevMonth - i, isCurrentMonth: false, isToday: false });
+      }
+      for (let d = 1; d <= daysInMonth; d++) {
+        cells.push({ day: d, isCurrentMonth: true, isToday: d === todayDate });
+      }
+      let nextDay = 1;
+      while (cells.length < 35) {
+        cells.push({ day: nextDay++, isCurrentMonth: false, isToday: false });
+      }
+
+      const weeks = [];
+      for (let i = 0; i < 5; i++) {
+        weeks.push(cells.slice(i * 7, (i + 1) * 7));
+      }
+
+      const weekdayRow = row().w_full().justify_between().items_center().px(1)
         .children(weekLabels.map((lbl, idx) => {
           const isTodayCol = idx === todayDayOfWeek;
           return col().items_center().gap(1)
-            .child(isTodayCol ? div().size(2.5).rounded_full().bg("#0a84ff") : div().size(2.5))
-            .child(text(lbl).text_size(7.5).font_semibold().text_color(isTodayCol ? "#0a84ff" : "#6e7681"));
+            .child(text(lbl).text_size(7).font_semibold().text_color(isTodayCol ? "#0a84ff" : "#8e8e93"))
+            .child(isTodayCol ? div().size(1.5).rounded_full().bg("#0a84ff") : div().size(1.5));
         }));
 
-      const cDark = "#1c1e24";
-      const cDarkBlue = "#142d54";
-      const cMidBlue = "#1b5299";
-      const cBrightBlue = "#0a84ff";
+      const dayCell = (item) => {
+        if (item.isToday) {
+          return div().size(11).rounded_full().bg("#30d158").items_center().justify_center()
+            .child(text(String(item.day)).text_size(6.5).font_bold().text_color("#000000").tabular_nums());
+        }
+        return div().size(11).items_center().justify_center()
+          .child(text(String(item.day)).text_size(6.5).font_bold()
+            .text_color(item.isCurrentMonth ? "#ffffff" : "#4a4e57").tabular_nums());
+      };
 
-      const row1Colors = [cDark, cDarkBlue, cMidBlue, cBrightBlue, cDarkBlue, cDark, cDark];
-      const row2Colors = [cDarkBlue, cBrightBlue, cBrightBlue, cBrightBlue, cMidBlue, cDark, cDark];
+      const dateRows = weeks.map((week, idx) =>
+        row().id(`cal-week-${idx}`).w_full().justify_between().items_center().px(1)
+          .children(week.map(dayCell))
+      );
 
-      const renderCell = (color, isTodayCell, key) =>
-        div().id(key).size(13).rounded(3).bg(color)
-          .when(isTodayCell, (el) => el.border(1.5, "#ffffff"));
-
-      const gridRow1 = row().w_full().justify_between().items_center().px(2)
-        .children(row1Colors.map((color, colIdx) => renderCell(color, colIdx === todayDayOfWeek, `heat-1-${colIdx}`)));
-
-      const gridRow2 = row().w_full().justify_between().items_center().px(2)
-        .children(row2Colors.map((color, colIdx) => renderCell(color, false, `heat-2-${colIdx}`)));
-
-      const rightCol = col().flex_1().h_full().justify_between().pl(8)
+      return applySkin(col(), "calendar", w, topH, 10, false).justify_between()
         .child(
           row().w_full().justify_between().items_center()
-            .child(text(`${now.getMonth() + 1} 月活跃热力`).text_size(9).font_medium().text_color("#d1d5db"))
-            .child(text("连续 14 天").text_size(7.5).text_color("#8e8e93"))
+            .child(text(`${month + 1} 月 ${year}`).text_size(9).font_bold().text_color("#ffffff"))
+            .child(
+              row().h(12).px(4).rounded_full().bg("#162a1c").border(1, "#1e462d").items_center()
+                .child(text(`第 ${weekNum} 周`).text_size(6.5).font_semibold().text_color("#30d158"))
+            )
         )
-        .child(weekdayHeaders)
-        .child(col().gap(3).w_full().child(gridRow1).child(gridRow2));
-
-      return row().id("clock").w(w).h(topH).px(6).py(6).items_center().justify_between().bg("#00000000")
-        .child(leftCol)
-        .child(rightCol);
+        .child(weekdayRow)
+        .child(col().w_full().gap(1).children(dateRows));
     };
 
     // BOTTOM ROW WIDGET BUILDERS
     // Bottom 1: Network Card (Refined to match screenshot)
     const buildNetwork = (w, h) => {
-      const trackW = w - 16;
+      const trackW = w - 12;
       const pct = 68;
-      const down = this.netDown ?? 1420;
-      const up = this.netUp ?? 4600;
+      const down = this.netDown ?? 16;
+      const up = this.netUp ?? 6;
 
-      return applySkin(col(), "network", w, h, 12, true).justify_between()
+      return applySkin(col(), "network", w, h, 10, true).justify_between()
         .child(
           // Row 1: Header
           row().w_full().justify_between().items_center()
             .child(
-              row().gap(4).items_center()
-                .child(icon("wifi", 10).color("#0a84ff"))
-                .child(text("网络").text_size(9.5).font_bold().text_color("#ffffff"))
+              row().gap(3).items_center()
+                .child(icon("wifi", 10).color("#ff9f0a"))
+                .child(text("网络").text_size(9).font_bold().text_color("#ffffff"))
             )
-            .child(text(`${pct}%`).text_size(9.5).font_bold().text_color("#0a84ff").tabular_nums())
+            .child(text(`${pct}%`).text_size(9.5).font_bold().text_color("#ff9f0a").tabular_nums())
         )
         .child(
-          // Row 2: Progress Bar
-          row().w_full().h(3.5).rounded_full().bg("#22242c").clip()
-            .child(div().h(3.5).w(Math.max(2, trackW * (pct / 100))).rounded_full().bg("#0a84ff"))
+          // Row 2: Orange Progress Bar
+          row().w_full().h(3).rounded_full().bg("#22242c").clip()
+            .child(div().h(3).w(Math.max(2, trackW * (pct / 100))).rounded_full().bg("#ff9f0a"))
         )
         .child(
           // Row 3: Rates
           row().w_full().justify_between().items_center()
             .child(
-              row().gap(2).items_center()
-                .child(text("↓").text_size(7.5).font_bold().text_color("#30d158"))
-                .child(text(`${down} KB/s`).text_size(8).font_bold().text_color("#30d158").tabular_nums())
+              row().gap(1).items_center()
+                .child(text("↓").text_size(7).font_bold().text_color("#ff9f0a"))
+                .child(text(`${down} KB/s`).text_size(7.5).font_bold().text_color("#ff9f0a").tabular_nums())
             )
             .child(
-              row().gap(2).items_center()
-                .child(text("↑").text_size(7.5).font_bold().text_color("#0a84ff"))
-                .child(text(`${up} KB/s`).text_size(8).font_bold().text_color("#0a84ff").tabular_nums())
+              row().gap(1).items_center()
+                .child(text("↑").text_size(7).font_bold().text_color("#ff9f0a"))
+                .child(text(`${up} KB/s`).text_size(7.5).font_bold().text_color("#ff9f0a").tabular_nums())
             )
         );
     };
@@ -906,58 +953,57 @@ export default class Dashboard extends View {
         .child(
           div().id(`${label}-ring-box`).size(size).items_center().justify_center()
             .child(shader("./ring.wgsl", [(pct ?? 0) / 100, 0.22, r, g, b]).id(`${label}-shader`).absolute_fill().fps(0))
-            .child(text(pct === null ? "—" : `${pct}%`).text_size(7).font_bold().text_color("#ffffff").tabular_nums())
+            .child(text(pct === null ? "—" : `${pct}%`).text_size(6).font_bold().text_color("#ffffff").tabular_nums())
         )
-        .child(text(label).text_size(7.5).font_medium().text_color("#8e8e93"));
+        .child(text(label).text_size(7).font_medium().text_color("#8e8e93"));
     };
 
     const buildRings = (w, h) => {
-      const ringSize = Math.min(25, Math.max(20, Math.floor((w - 32) / 4)));
-      return applySkin(col(), "rings", w, h, 12, true).justify_between()
+      const ringSize = Math.min(22, Math.max(18, Math.floor((w - 24) / 4)));
+      return applySkin(col(), "rings", w, h, 10, true).justify_between()
         .child(
           // Row 1: Header
-          row().w_full().justify_between().items_center()
-            .child(text("系统遥测").text_size(9.5).font_bold().text_color("#ffffff"))
-            .child(text(this.chipModel || "Apple M3 Max").text_size(8).text_color("#8e8e93"))
+          row().w_full().items_center()
+            .child(text("系统遥测").text_size(9).font_bold().text_color("#ffffff"))
         )
         .child(
-          // Row 2: 4 Gauges
-          row().w_full().justify_between().items_center().px(4)
-            .child(ringGauge("CPU", cpu?.used ?? 93, 1.0, 0.27, 0.23, ringSize))
-            .child(ringGauge("GPU", this.gpuPercent ?? 47, 0.04, 0.52, 1.0, ringSize))
+          // Row 2: 4 Gauges (CPU: blue, GPU: purple, 内存: orange, 存储: cyan)
+          row().w_full().justify_between().items_center().px(2)
+            .child(ringGauge("CPU", cpu?.used ?? 69, 0.04, 0.52, 1.0, ringSize))
+            .child(ringGauge("GPU", this.gpuPercent ?? 60, 0.69, 0.32, 0.87, ringSize))
             .child(ringGauge("内存", memPct ?? 94, 1.0, 0.62, 0.04, ringSize))
-            .child(ringGauge("存储", this.storagePercent ?? 77, 0.69, 0.32, 0.87, ringSize))
+            .child(ringGauge("存储", this.storagePercent ?? 77, 0.0, 0.96, 1.0, ringSize))
         );
     };
 
     // Bottom 3: Battery Card (Refined to match screenshot)
     const battPct = this.battery?.percent ?? 100;
     const buildBattery = (w, h) => {
-      const trackW = w - 16;
+      const trackW = w - 12;
       const isCharging = this.battery?.charging ?? true;
       const remainingText = isCharging ? "电源适配器已连接" : (this.battery?.remaining ?? "电池供电");
       const timeText = isCharging ? "0:00" : (this.battery?.remaining ?? "0:00");
 
-      return applySkin(col(), "battery", w, h, 12, true).justify_between()
+      return applySkin(col(), "battery", w, h, 10, true).justify_between()
         .child(
           // Row 1: Header
           row().w_full().justify_between().items_center()
             .child(
-              row().gap(3).items_center()
+              row().gap(2).items_center()
                 .child(icon("battery", 10).color("#30d158"))
-                .child(text("电池").text_size(9.5).font_bold().text_color("#ffffff"))
+                .child(text("电池").text_size(9).font_bold().text_color("#ffffff"))
             )
-            .child(text(`⚡ ${battPct}%`).text_size(9.5).font_bold().text_color("#30d158").tabular_nums())
+            .child(text(`⚡ ${battPct}%`).text_size(9).font_bold().text_color("#30d158").tabular_nums())
         )
         .child(
           // Row 2: Progress Bar
-          row().w_full().h(3.5).rounded_full().bg("#22242c").clip()
-            .child(div().h(3.5).w(Math.max(2, trackW * (battPct / 100))).rounded_full().bg("#30d158"))
+          row().w_full().h(3).rounded_full().bg("#22242c").clip()
+            .child(div().h(3).w(Math.max(2, trackW * (battPct / 100))).rounded_full().bg("#30d158"))
         )
         .child(
           // Row 3: Footer
           row().w_full().justify_between().items_center()
-            .child(text(remainingText).text_size(7.5).text_color("#8e8e93").truncate())
+            .child(text(remainingText).text_size(7).text_color("#8e8e93").truncate())
             .child(text(timeText).text_size(7.5).font_medium().text_color("#30d158"))
         );
     };
@@ -972,27 +1018,21 @@ export default class Dashboard extends View {
     };
 
     const launcherBtn = (id, child, onClick) =>
-      row().id(id).size(24).rounded(6).bg("#1b1c22").border(1, "#282a32")
+      row().id(id).size(21).rounded(5).bg("#1a1b22").border(1, "#282a35")
         .items_center().justify_center().cursor_pointer().hover_bg("#252730")
         .when(!!onClick, (b) => b.on_click(onClick))
         .child(child);
 
     const buildLaunchers = (w, h) =>
-      applySkin(col(), "launchers", w, h, 12, true).justify_between()
+      applySkin(col(), "launchers", w, h, 10, true).justify_center().items_center()
         .child(
-          // Row 1: Header
-          row().w_full().justify_between().items_center()
-            .child(text("快捷启动").text_size(9.5).font_bold().text_color("#ffffff"))
-            .child(text("5 个应用").text_size(8).text_color("#8e8e93"))
-        )
-        .child(
-          // Row 2: 5 Squircle Buttons
-          row().w_full().justify_between().items_center()
-            .child(launcherBtn("btn-apple", icon("apple", 12).color("#0a84ff"), () => run("settings.open")))
-            .child(launcherBtn("btn-music", icon("music", 11).color("#ff2d55"), () => open("/Applications/汽水音乐.app")))
-            .child(launcherBtn("btn-plus", icon("plus", 11).color("#ffffff"), () => run("settings.open")))
-            .child(launcherBtn("btn-zap", icon("zap", 11).color("#ffd60a"), () => run("settings.open")))
-            .child(launcherBtn("btn-grid", icon("layout-grid", 11).color("#af52de"), toggleEditing))
+          // 5 Squircle Buttons in a row
+          row().w_full().justify_between().items_center().px(2)
+            .child(launcherBtn("btn-apple", icon("apple", 10).color("#ffffff"), () => run("settings.open")))
+            .child(launcherBtn("btn-music", icon("music", 9.5).color("#ff2d55"), () => open("/Applications/汽水音乐.app")))
+            .child(launcherBtn("btn-plus", icon("plus", 9.5).color("#ffffff"), () => run("settings.open")))
+            .child(launcherBtn("btn-zap", icon("zap", 9.5).color("#ff9f0a"), () => run("settings.open")))
+            .child(launcherBtn("btn-grid", icon("layout-grid", 9.5).color("#af52de"), toggleEditing))
         );
 
     const builders = {
@@ -1000,6 +1040,7 @@ export default class Dashboard extends View {
       "music": buildMusic,
       "codex": buildCodex,
       "clock": buildClock,
+      "calendar": buildCalendar,
       "map": buildMap,
       "battery": buildBattery,
       "network": buildNetwork,
@@ -1008,11 +1049,11 @@ export default class Dashboard extends View {
     };
 
     const weights = {
-      "codex": 120, "map": 120, "clock": 240,
-      "network": 120, "rings": 162, "battery": 78, "launchers": 120,
-      "soda-music": 120, "music": 120,
+      "codex": 130, "map": 130, "clock": 135, "calendar": 135,
+      "network": 130, "rings": 165, "battery": 105, "launchers": 130,
+      "soda-music": 130, "music": 130,
     };
-    const rowGap = 6;
+    const rowGap = 5;
     const layoutRows = (widgetIds) => {
       let y = 0;
       return widgetIds.map((ids, index) => {
@@ -1080,7 +1121,7 @@ export default class Dashboard extends View {
       row().id(`widget-${rowType}-row`).w_full().h(rowHeight).gap(gap).items_start()
         .children(slots.map(({ id, width }) => {
           if (drag?.slot.id === id) {
-            return div().id(`placeholder/${id}`).w(width).h(height).rounded(12)
+            return div().id(`placeholder/${id}`).w(width).h(height).rounded(10)
               .border(1, "#0a84ff66").bg("#0a84ff12");
           }
           const card = builders[id](width, height);
@@ -1092,7 +1133,7 @@ export default class Dashboard extends View {
         }))
         .when(hasAdd, (r) => r.child(addCard(rowType, height)))
         .when(isEdit && drag && slots.length === 0 && !hasAdd, (r) =>
-          r.child(row().w_full().h(height).rounded(12).justify_center().items_center().border(1, "#ffffff26")
+          r.child(row().w_full().h(height).rounded(10).justify_center().items_center().border(1, "#ffffff26")
             .child(text("拖到这里").text_size(8).text_color("muted"))));
 
     const grid = col().id("widget-grid").w_full().gap(rowGap).children(rows.map(renderWidgetRow));

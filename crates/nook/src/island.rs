@@ -496,7 +496,7 @@ impl Island {
                     }));
                 }
             }
-            Action::Close if self.page().is_some_and(|page| page.name == "app-launcher") => {}
+            Action::Close if self.page().is_some_and(|page| page.name == "app-launcher" || page.name == "app-manager") => {}
             Action::Close => self.set_expanded(false),
             Action::Cycle(forward) => {
                 if self.expanded {
@@ -1719,7 +1719,7 @@ fn expanded(s: &Island, look: &Look) -> El {
     if let Some(badge) = badge {
         controls = controls.child(badge);
     }
-    if !page.is_some_and(|p| p.name.starts_with("dashboard") || p.name == "app-launcher" || p.name == "ai-workbench") {
+    if !page.is_some_and(|p| p.name.starts_with("dashboard") || p.name == "app-launcher" || p.name == "ai-workbench" || p.name == "app-manager") {
         controls = controls.child(
             text(title)
                 .font(TextStyle::new(12.0, 600.0))
@@ -1966,6 +1966,40 @@ mod scroll_tests {
             "an up swipe on the launcher keeps it open"
         );
         assert_eq!(rt.state.page().unwrap().name, "app-launcher");
+    }
+
+    #[test]
+    fn an_up_swipe_on_app_manager_does_not_close_open_nook() {
+        let mut rt = island_with_pages(1);
+        rt.state.outputs.insert(
+            "app-manager".into(),
+            Output {
+                name: "app-manager".into(),
+                title: "App Manager".into(),
+                has_expanded: true,
+                expanded: Some(
+                    serde_json::from_value(
+                        json!({ "t": "box", "s": { "dir": "col", "h": 40.0 } }),
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            },
+        );
+        rt.state.expanded = true;
+        rt.state.select("app-manager");
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let at = rt.find("island/body").expect("body drawn");
+        rt.update(|s, tx| {
+            s.scroll(0.0, -35.0, GesturePhase::Began, false, Some(at), tx);
+        });
+        assert!(
+            rt.state.expanded,
+            "an up swipe on the app manager keeps it open"
+        );
+        assert_eq!(rt.state.page().unwrap().name, "app-manager");
     }
 
     #[test]

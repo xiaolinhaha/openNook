@@ -17,7 +17,8 @@
   "expanded": [
     "dashboard",
     "app-launcher",
-    "ai-workbench"
+    "ai-workbench",
+    "app-manager"
   ],
   "hidden": [
     "codex",
@@ -37,19 +38,21 @@
           "codex",
           "map",
           "clock",
+          "calendar",
           "network",
           "rings",
           "battery",
           "launchers"
         ],
         "widgetRows": [
-          ["codex", "map", "clock"],
+          ["codex", "map", "clock", "calendar"],
           ["network", "rings", "battery", "launchers"]
         ],
         "widgetStyles": {
           "codex": "classic",
           "map": "classic",
           "clock": "classic",
+          "calendar": "classic",
           "network": "classic",
           "rings": "classic",
           "battery": "classic",

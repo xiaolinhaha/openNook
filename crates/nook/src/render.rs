@@ -182,7 +182,7 @@ fn icon_el(name: &str, s: &Style, r: &Rcx) -> El {
 
 fn image_el(src: &str, s: &Style, r: &Rcx) -> El {
     let size = size_of(s.w, 32.0).max(size_of(s.h, 32.0));
-    let base = if r.name == "app-launcher" && (src.starts_with("app:") || src.starts_with("app-file:")) {
+    let base = if (r.name == "app-launcher" || r.name == "app-manager") && (src.starts_with("app:") || src.starts_with("app-file:")) {
         el()
     } else {
         el().fill(r.theme.color("raised"))

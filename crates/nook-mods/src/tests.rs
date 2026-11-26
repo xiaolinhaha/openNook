@@ -21,6 +21,17 @@ fn run_check(app: &Path, dir: PathBuf, store: Arc<Store>, settle_ms: u64) -> Che
 }
 
 #[test]
+fn dashboard_mod_renders_cleanly() {
+    let app = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nook");
+    let dir = app.join("mods/dashboard");
+    let checked = run_check(&app, dir, Arc::default(), 0);
+    if let Some(ref err) = checked.output.error {
+        panic!("Dashboard render error: {err}");
+    }
+    assert!(checked.output.expanded.is_some());
+}
+
+#[test]
 fn renders_activity_and_expanded() {
     let app = temp("render");
     let dir = write_mod(&app, "hello", r#"

@@ -51,6 +51,17 @@ pub fn write_workspace() -> std::io::Result<Vec<String>> {
     write_if_changed(&dir.join("nook.d.ts"), nook_mods::NOOK_D_TS)?;
     write_if_changed(&dir.join("ui.d.ts"), nook_mods::UI_D_TS)?;
     let clones = files::sync_shipped(&dir.join("mods"), &dir.join("installed.json"), SHIPPED_MODS)?;
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let probe = dir.join("mods/app-manager/probe");
+        let mut permissions = std::fs::metadata(&probe)?.permissions();
+        if permissions.mode() & 0o100 == 0 {
+            permissions.set_mode(permissions.mode() | 0o100);
+            std::fs::set_permissions(probe, permissions)?;
+        }
+    }
     // Editors resolve `nook` and `nook/ui` to the type files.
     for found in files::scan(&dir.join("mods")) {
         let path = found.dir.join("jsconfig.json");
