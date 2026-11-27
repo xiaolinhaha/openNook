@@ -1878,6 +1878,15 @@ fn general(s: &Settings) -> El {
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let haptics = s.island("haptics").and_then(Value::as_bool).unwrap_or(true);
+    let dolls = s.island("dolls").and_then(Value::as_bool).unwrap_or(true);
+    let dolls_active_only = s
+        .island("dollsActiveOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let dolls_avoid_cursor = s
+        .island("dollsAvoidCursor")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     col()
         .gap(18.0)
         .child(card(vec![
@@ -1923,6 +1932,30 @@ fn general(s: &Settings) -> El {
                 Some("双指下滑展开灵动岛时，触控板会轻点反馈"),
                 haptics,
                 move |s| s.set_island("haptics", Value::from(!haptics)),
+            ),
+            toggle(
+                "dolls",
+                "bot",
+                "刘海吊绳玩偶",
+                Some("在刘海下方挂出 Codex 与 MAP 模型小助手"),
+                dolls,
+                move |s| s.set_island("dolls", Value::from(!dolls)),
+            ),
+            toggle(
+                "dolls-active-only",
+                "activity",
+                "平时完全藏进刘海",
+                Some("开启后空闲时完全隐藏，关闭则露出小脑袋和眼睛偷看"),
+                dolls_active_only,
+                move |s| s.set_island("dollsActiveOnly", Value::from(!dolls_active_only)),
+            ),
+            toggle(
+                "dolls-avoid-cursor",
+                "mouse",
+                "靠近玩偶自动让路",
+                Some("鼠标移到玩偶上时自动淡出并缩短挂绳"),
+                dolls_avoid_cursor,
+                move |s| s.set_island("dollsAvoidCursor", Value::from(!dolls_avoid_cursor)),
             ),
             toggle("login", "laptop", "登录时启动", None, s.login, |s| {
                 let want = !s.login;

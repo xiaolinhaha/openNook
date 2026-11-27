@@ -2,6 +2,7 @@
 //! island; `opennook check <mod>` and `opennook shot` are for the agents that write mods.
 
 mod codex_status;
+mod dolls;
 mod fields;
 mod file_drop;
 mod file_shelf;
@@ -287,6 +288,7 @@ fn run() {
             s.publish();
         });
         let store_for_layout = store.clone();
+        services::attach_island(overlay.clone(), store.clone());
         services::start(store);
         watch_layout(overlay.clone(), store_for_layout);
         watch_displays(overlay.clone());
@@ -619,9 +621,12 @@ fn shot(args: &[String]) -> i32 {
         Collect(outputs.clone(), inputs.clone()),
     );
     services::start_agents(store.clone());
-    services::start(store);
+    services::start(store.clone());
     std::thread::sleep(Duration::from_millis(wait));
     mods.stop();
+    let now = std::time::Instant::now();
+    island.dolls.apply_codex_at(&store.get("codexStatus").1, &store.get("agents").1, now);
+    island.dolls.apply_map_at(&store.get("mapStatus").1, now);
     island.outputs = outputs.lock().unwrap().clone();
     // Remote pictures, as the island would have them by now.
     let mut urls = Vec::new();

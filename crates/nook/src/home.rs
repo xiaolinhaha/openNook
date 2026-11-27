@@ -163,6 +163,19 @@ pub struct IslandOptions {
     pub glass_tint: f32,
     /// The island's own look: fill, gradient, border, glow, corners, wings, shadow.
     pub style: nook_mods::IslandStyle,
+    /// Hanging model dolls suspended below the closed island.
+    #[serde(default = "default_true")]
+    pub dolls: bool,
+    /// Completely hide idle dolls instead of peeking heads below the notch.
+    #[serde(rename = "dollsActiveOnly", default)]
+    pub dolls_active_only: bool,
+    /// Fade and retract dolls when the pointer moves over them.
+    #[serde(rename = "dollsAvoidCursor", default)]
+    pub dolls_avoid_cursor: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for IslandOptions {
@@ -180,6 +193,9 @@ impl Default for IslandOptions {
             hide_in_full_screen: true,
             glass_tint: 0.5,
             style: Default::default(),
+            dolls: true,
+            dolls_active_only: false,
+            dolls_avoid_cursor: false,
         }
     }
 }

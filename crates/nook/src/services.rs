@@ -6,9 +6,40 @@ use nook_core::agents::{AgentSession, AgentStatus};
 use nook_core::models::RepeatMode;
 use nook_core::NowPlayingData;
 use nook_mods::Store;
+use rune::OverlayHandle;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
+
+static ISLAND_OVERLAY: OnceLock<Mutex<Option<OverlayHandle<crate::island::Island>>>> =
+    OnceLock::new();
+static AGENTS_STARTED: OnceLock<()> = OnceLock::new();
+
+pub fn attach_island(overlay: OverlayHandle<crate::island::Island>, store: Arc<Store>) {
+    let slot = ISLAND_OVERLAY.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap() = Some(overlay);
+    start_agents(store);
+}
+
+fn push_map_to_island(map: Value) {
+    let Some(handle) = ISLAND_OVERLAY
+        .get()
+        .and_then(|m| m.lock().unwrap().clone())
+    else {
+        return;
+    };
+    handle.update(move |s, tx| s.dolls.apply_map(&map, tx));
+}
+
+fn push_codex_to_island(codex: Value, agents: Value) {
+    let Some(handle) = ISLAND_OVERLAY
+        .get()
+        .and_then(|m| m.lock().unwrap().clone())
+    else {
+        return;
+    };
+    handle.update(move |s, tx| s.dolls.apply_codex(&codex, &agents, tx));
+}
 
 /// Starts the parts of nook-core mods read. Not `nook_core::init`: that also installs the
 /// system-HUD replacement, which hides macOS's volume HUD until a mod draws one.
@@ -41,7 +72,10 @@ pub fn start(store: Arc<Store>) {
     spawn("nook-apps", move || loop {
         let (apps, map_started) = crate::platform::running_apps();
         store.publish("apps", Value::Array(apps));
-        store.publish("mapStatus", crate::map_status::read(map_started, now_ms()));
+        let map = crate::map_status::read(map_started, now_ms());
+        if store.publish("mapStatus", map.clone()) {
+            push_map_to_island(map);
+        }
         std::thread::sleep(Duration::from_secs(2));
     });
 }
@@ -95,6 +129,9 @@ pub fn request_location(store: Arc<Store>) {
 }
 
 pub fn start_agents(store: Arc<Store>) {
+    if AGENTS_STARTED.set(()).is_err() {
+        return;
+    }
     // Both topics share the same process scan, even if two mods first read different topics.
     store.publish("agents", json!([]));
     store.publish("codexStatus", Value::Null);
@@ -102,8 +139,13 @@ pub fn start_agents(store: Arc<Store>) {
         let mut codex = crate::codex_status::Monitor::new();
         loop {
             let (agents, codex_started) = nook_core::agents::snapshot_with_codex();
-            store.publish("agents", Value::Array(agents.iter().map(agent_json).collect()));
-            store.publish("codexStatus", codex.poll(SystemTime::now(), codex_started));
+            let agents_json = Value::Array(agents.iter().map(agent_json).collect());
+            let codex_json = codex.poll(SystemTime::now(), codex_started);
+            let changed_agents = store.publish("agents", agents_json.clone());
+            let changed_codex = store.publish("codexStatus", codex_json.clone());
+            if changed_agents || changed_codex {
+                push_codex_to_island(codex_json, agents_json);
+            }
             let cadence = codex_started.map_or_else(nook_core::agents::poll_interval, |_| Duration::from_secs(2));
             std::thread::sleep(cadence);
         }

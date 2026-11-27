@@ -218,6 +218,8 @@ pub struct Island {
     /// How far the tab strip is scrolled, and where it was drawn (window points).
     tabs_offset: f32,
     tabs_rect: Cell<Option<[f32; 4]>>,
+    /// Hanging AI model companions below the closed notch.
+    pub dolls: crate::dolls::Dolls,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -283,6 +285,7 @@ impl Island {
             body_origin: Cell::new((0.0, 0.0)),
             tabs_offset: 0.0,
             tabs_rect: Cell::new(None),
+            dolls: crate::dolls::Dolls::new(),
         }
     }
 
@@ -1048,9 +1051,18 @@ impl Island {
             crate::file_shelf::context_menu(self, at, tx);
             return;
         }
+        let dolls_on = self.layout.island.dolls;
         let menu = PopupMenu::new()
             .item(PopupItem::new("settings", "Settings…"))
             .item(PopupItem::new("file-shelf", "文件暂存…"))
+            .item(PopupItem::new(
+                "dolls",
+                if dolls_on {
+                    "✓ 刘海吊绳玩偶"
+                } else {
+                    "刘海吊绳玩偶"
+                },
+            ))
             .item(PopupItem::new("folder", "Open Mods Folder"))
             .item(PopupItem::new("guide", "Open AGENTS.md"))
             .separator()
@@ -1068,6 +1080,14 @@ impl Island {
                 s.set_expanded(true);
                 s.file_shelf.reload();
                 s.select("file-shelf");
+            }
+            Some("dolls") => {
+                s.context_menu_open = false;
+                let next = !s.layout.island.dolls;
+                s.layout.island.dolls = next;
+                let _ = crate::home::patch_layout(&json!({
+                    "island": { "dolls": next }
+                }));
             }
             Some("folder") => {
                 s.context_menu_open = false;
@@ -1128,8 +1148,9 @@ mod display_tests {
     }
 }
 
-pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
+pub fn poll(s: &mut Island, _t: f64, tx: &mut Tx) -> bool {
     let now = Instant::now();
+    let changed = s.dolls.poll(now, tx);
     if let Some(destination) = s.file_drop_destination {
         let events = crate::file_drop::take(destination);
         let changed = !events.is_empty();
@@ -1197,7 +1218,7 @@ pub fn poll(s: &mut Island, _t: f64, _tx: &mut Tx) -> bool {
             return true;
         }
     }
-    false
+    changed
 }
 
 /// The panel gained or lost the keyboard. Lost (a click in another app), a field that had it
@@ -1431,7 +1452,24 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
                 .key("wing/right")
                 .ride_trailing(),
         );
-    col().w_full().h_full().items_center().child(island)
+    el().w_full()
+        .h_full()
+        .child(
+            col()
+                .key("dolls/layer")
+                .w_full()
+                .items_center()
+                .pin(Some(0.0), Some(s.compact_height()), Some(0.0), None)
+                .motion(MORPH)
+                .child(crate::dolls::view(s)),
+        )
+        .child(
+            col()
+                .w_full()
+                .h_full()
+                .items_center()
+                .child(island),
+        )
 }
 
 /// The veil over the glass, top to bottom: it holds black over the camera band and falls to
@@ -1450,8 +1488,16 @@ fn veil(s: &Island, height: f32, black: Color) -> [(f32, Color); 3] {
     [(0.0, black), (hold, black), (1.0, black.alpha(0.0))]
 }
 
-fn compact(s: &Island, look: &Look) -> El {
-    let n = s.notch;
+impl Island {
+    pub(crate) fn compact_height(&self) -> f32 {
+        let (_, _, chin) = compact_chin_and_detail(self);
+        self.notch.h + chin + self.swipe.pull
+    }
+}
+
+fn compact_chin_and_detail<'a>(
+    s: &'a Island,
+) -> (Option<&'a Output>, Option<&'a nook_mods::Node>, f32) {
     let active = s.active();
     let activity = active.and_then(|o| o.activity.as_ref());
     let hovered = s.hover && s.layout.island.hover == HoverMode::Peek;
@@ -1460,10 +1506,6 @@ fn compact(s: &Island, look: &Look) -> El {
         .as_ref()
         .is_some_and(|(name, _)| active.is_some_and(|o| o.name == *name));
     let peek = hovered || notice;
-    let base_side = activity.map_or(0.0, |a| {
-        a.width.unwrap_or(n.h + 10.0).clamp(n.h * 0.8, 160.0)
-    });
-    let side = base_side + if peek { PEEK_EXTRA / 2.0 } else { 0.0 } + s.swipe.pull_width() / 2.0;
     let detail = activity.and_then(|a| {
         if hovered {
             a.detail.as_ref()
@@ -1483,6 +1525,23 @@ fn compact(s: &Island, look: &Look) -> El {
     } else {
         PEEK_CHIN
     };
+    (active, detail, chin)
+}
+
+fn compact(s: &Island, look: &Look) -> El {
+    let n = s.notch;
+    let (active, detail, chin) = compact_chin_and_detail(s);
+    let activity = active.and_then(|o| o.activity.as_ref());
+    let hovered = s.hover && s.layout.island.hover == HoverMode::Peek;
+    let notice = s
+        .compact_notice
+        .as_ref()
+        .is_some_and(|(name, _)| active.is_some_and(|o| o.name == *name));
+    let peek = hovered || notice;
+    let base_side = activity.map_or(0.0, |a| {
+        a.width.unwrap_or(n.h + 10.0).clamp(n.h * 0.8, 160.0)
+    });
+    let side = base_side + if peek { PEEK_EXTRA / 2.0 } else { 0.0 } + s.swipe.pull_width() / 2.0;
     let mut island = col()
         .size(n.w + 2.0 * side, n.h + chin + s.swipe.pull)
         .corners([0.0, 0.0, look.compact_radius, look.compact_radius])
